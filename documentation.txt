@@ -1,0 +1,10 @@
+config.yaml: entry point
+dataClasses: defines the data classes for config and steam market data
+snoozerScheduler: takes the most urgent skin, executes it and sleeps till next execution
+clockworkScheduler: once started, executes skins every hour
+rateLimiter: maintains a list of calls made in the last 60 seconds
+UTILS: because we need them in 2025 where the same numbers and symbols mean different thing to machines and humans. im held back with the technology of my time
+orchestrator: validates the config and starts all the schedulers
+database: persistent and violatile  
+
+kya acting karti hai aap... you should act mine 

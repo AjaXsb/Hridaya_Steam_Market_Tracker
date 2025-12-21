@@ -1,0 +1,420 @@
+"""
+Database Transaction Manager - Routes data to appropriate storage.
+
+Uses hybrid architecture:
+- SQLite for operational snapshots (price_overview, histogram, activity)
+- TimescaleDB for analytical time-series (price_history)
+"""
+
+import json
+import aiosqlite
+import asyncpg
+from datetime import datetime
+from typing import Optional
+from dataClasses import (
+    PriceOverviewData,
+    OrdersHistogramData,
+    OrdersActivityData,
+    PriceHistoryData
+)
+
+
+class DataWizard:
+    """
+    Manages data persistence across SQLite and TimescaleDB.
+
+    Routes data objects to the appropriate database based on type.
+    Uses match-case for maximum efficiency.
+    """
+
+    def __init__(
+        self,
+        sqlite_path: str = "market_data.db",
+        timescale_dsn: Optional[str] = None
+    ):
+        """
+        Initialize database connections.
+
+        Args:
+            sqlite_path: Path to SQLite database file
+            timescale_dsn: PostgreSQL connection string for TimescaleDB
+                          (e.g., "postgresql://user:pass@localhost/dbname")
+                          If None, price_history will also use SQLite
+        """
+        self.sqlite_path = sqlite_path
+        self.timescale_dsn = timescale_dsn
+        self.sqlite_conn: Optional[aiosqlite.Connection] = None
+        self.timescale_pool: Optional[asyncpg.Pool] = None
+
+    async def initialize(self):
+        """Initialize database connections and create schemas."""
+        await self._initialize_sqlite()
+        if self.timescale_dsn:
+            await self._initialize_timescale()
+
+    async def close(self):
+        """Close all database connections."""
+        if self.sqlite_conn:
+            await self.sqlite_conn.close()
+        if self.timescale_pool:
+            await self.timescale_pool.close()
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        await self.initialize()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
+
+    async def store_data(
+        self,
+        data: PriceOverviewData | OrdersHistogramData | OrdersActivityData | PriceHistoryData,
+        item_config: dict
+    ):
+        """
+        Route data to appropriate database based on type.
+
+        Args:
+            data: Pydantic data object from API client
+            item_config: Item configuration dict with market_hash_name, appid, etc.
+        """
+        # Match-case for MAXIMUM EFFICIENCY
+        match data:
+            case PriceOverviewData():
+                await self._store_price_overview(data, item_config)
+            case OrdersHistogramData():
+                await self._store_histogram(data, item_config)
+            case OrdersActivityData():
+                await self._store_activity(data, item_config)
+            case PriceHistoryData():
+                await self._store_price_history(data, item_config)
+            case _:
+                raise ValueError(f"Unknown data type: {type(data)}")
+
+    # ========================================================================
+    # SQLite Initialization
+    # ========================================================================
+
+    async def _initialize_sqlite(self):
+        """Create SQLite connection and tables for operational data."""
+        self.sqlite_conn = await aiosqlite.connect(self.sqlite_path)
+
+        # Enable WAL mode for better concurrency
+        await self.sqlite_conn.execute("PRAGMA journal_mode=WAL")
+
+        # Create tables
+        await self._create_sqlite_tables()
+
+    async def _create_sqlite_tables(self):
+        """Create SQLite schema for operational snapshots."""
+        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+
+        # Price Overview - current market prices
+        await self.sqlite_conn.execute("""
+            CREATE TABLE IF NOT EXISTS price_overview (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                market_hash_name TEXT NOT NULL,
+                appid INTEGER,
+                lowest_price TEXT,
+                median_price TEXT,
+                volume TEXT,
+                success INTEGER
+            )
+        """)
+
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_overview_item_time
+            ON price_overview(market_hash_name, timestamp DESC)
+        """)
+
+        # Orders Histogram - order book snapshots
+        await self.sqlite_conn.execute("""
+            CREATE TABLE IF NOT EXISTS orders_histogram (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                market_hash_name TEXT NOT NULL,
+                appid INTEGER,
+                buy_order_table TEXT,
+                sell_order_table TEXT,
+                buy_order_count TEXT,
+                sell_order_count TEXT,
+                buy_order_price TEXT,
+                sell_order_price TEXT,
+                highest_buy_order TEXT,
+                lowest_sell_order TEXT,
+                price_prefix TEXT,
+                price_suffix TEXT,
+                success INTEGER
+            )
+        """)
+
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_histogram_item_time
+            ON orders_histogram(market_hash_name, timestamp DESC)
+        """)
+
+        # Orders Activity - trade activity log
+        await self.sqlite_conn.execute("""
+            CREATE TABLE IF NOT EXISTS orders_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                market_hash_name TEXT NOT NULL,
+                appid INTEGER,
+                parsed_activities TEXT,
+                raw_timestamp INTEGER,
+                success INTEGER
+            )
+        """)
+
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_activity_item_time
+            ON orders_activity(market_hash_name, timestamp DESC)
+        """)
+
+        await self.sqlite_conn.commit()
+
+    # ========================================================================
+    # TimescaleDB Initialization
+    # ========================================================================
+
+    async def _initialize_timescale(self):
+        """Create TimescaleDB connection pool and hypertable."""
+        self.timescale_pool = await asyncpg.create_pool(self.timescale_dsn)
+        await self._create_timescale_tables()
+
+    async def _create_timescale_tables(self):
+        """Create TimescaleDB hypertable for price history."""
+        async with self.timescale_pool.acquire() as conn:
+            # Create table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS price_history (
+                    time TIMESTAMPTZ NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    appid INTEGER,
+                    date_string TEXT,
+                    price DOUBLE PRECISION,
+                    volume TEXT,
+                    fetched_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (market_hash_name, time)
+                )
+            """)
+
+            # Check if already a hypertable
+            is_hypertable = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM timescaledb_information.hypertables
+                    WHERE hypertable_name = 'price_history'
+                )
+            """)
+
+            if not is_hypertable:
+                # Convert to hypertable
+                await conn.execute("""
+                    SELECT create_hypertable('price_history', 'time',
+                        if_not_exists => TRUE,
+                        migrate_data => TRUE
+                    )
+                """)
+
+                # Add compression policy (compress data older than 7 days)
+                await conn.execute("""
+                    ALTER TABLE price_history SET (
+                        timescaledb.compress,
+                        timescaledb.compress_segmentby = 'market_hash_name'
+                    )
+                """)
+
+                await conn.execute("""
+                    SELECT add_compression_policy('price_history',
+                        INTERVAL '7 days',
+                        if_not_exists => TRUE
+                    )
+                """)
+
+                # Add retention policy (delete data older than 90 days)
+                await conn.execute("""
+                    SELECT add_retention_policy('price_history',
+                        INTERVAL '90 days',
+                        if_not_exists => TRUE
+                    )
+                """)
+
+    # ========================================================================
+    # SQLite Storage Methods
+    # ========================================================================
+
+    async def _store_price_overview(self, data: PriceOverviewData, item_config: dict):
+        """Store price overview snapshot to SQLite."""
+        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+
+        await self.sqlite_conn.execute("""
+            INSERT INTO price_overview (
+                market_hash_name, appid, lowest_price, median_price, volume, success
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            item_config['market_hash_name'],
+            item_config['appid'],
+            data.lowest_price,
+            data.median_price,
+            data.volume,
+            int(data.success)
+        ))
+        await self.sqlite_conn.commit()
+
+    async def _store_histogram(self, data: OrdersHistogramData, item_config: dict):
+        """Store order book histogram snapshot to SQLite."""
+        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+
+        # Convert order tables to JSON
+        buy_orders_json = json.dumps([order.dict() for order in data.buy_order_table]) if data.buy_order_table else None
+        sell_orders_json = json.dumps([order.dict() for order in data.sell_order_table]) if data.sell_order_table else None
+
+        await self.sqlite_conn.execute("""
+            INSERT INTO orders_histogram (
+                market_hash_name, appid,
+                buy_order_table, sell_order_table,
+                buy_order_count, sell_order_count,
+                buy_order_price, sell_order_price,
+                highest_buy_order, lowest_sell_order,
+                price_prefix, price_suffix, success
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            item_config['market_hash_name'],
+            item_config['appid'],
+            buy_orders_json,
+            sell_orders_json,
+            str(data.buy_order_count) if data.buy_order_count else None,
+            str(data.sell_order_count) if data.sell_order_count else None,
+            data.buy_order_price,
+            data.sell_order_price,
+            data.highest_buy_order,
+            data.lowest_sell_order,
+            data.price_prefix,
+            data.price_suffix,
+            int(data.success)
+        ))
+        await self.sqlite_conn.commit()
+
+    async def _store_activity(self, data: OrdersActivityData, item_config: dict):
+        """Store trade activity snapshot to SQLite."""
+        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+
+        # Convert parsed activities to JSON
+        activities_json = json.dumps([activity.dict() for activity in data.parsed_activities]) if data.parsed_activities else None
+
+        await self.sqlite_conn.execute("""
+            INSERT INTO orders_activity (
+                market_hash_name, appid,
+                parsed_activities, raw_timestamp, success
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (
+            item_config['market_hash_name'],
+            item_config['appid'],
+            activities_json,
+            data.timestamp,
+            int(data.success)
+        ))
+        await self.sqlite_conn.commit()
+
+    # ========================================================================
+    # TimescaleDB Storage Methods
+    # ========================================================================
+
+    async def _store_price_history(self, data: PriceHistoryData, item_config: dict):
+        """
+        Store price history to TimescaleDB (or SQLite if TimescaleDB not configured).
+
+        Loops through all price points in data.prices and inserts individually
+        with UPSERT to avoid duplicates.
+        """
+        if self.timescale_pool:
+            await self._store_price_history_timescale(data, item_config)
+        else:
+            await self._store_price_history_sqlite(data, item_config)
+
+    async def _store_price_history_timescale(self, data: PriceHistoryData, item_config: dict):
+        """Insert price history points into TimescaleDB hypertable."""
+        async with self.timescale_pool.acquire() as conn:
+            for price_point in data.prices:
+                # price_point is [date_string, price_float, volume_string]
+                date_string, price, volume = price_point
+
+                # Parse Steam's date format to timestamptz
+                # Example: "Jul 02 2014 01: +0" -> needs parsing
+                # For now, use date_string as-is and convert to timestamp
+                # TODO: Implement proper date parsing
+
+                await conn.execute("""
+                    INSERT INTO price_history (
+                        time, market_hash_name, appid, date_string, price, volume
+                    ) VALUES (NOW(), $1, $2, $3, $4, $5)
+                    ON CONFLICT (market_hash_name, time) DO UPDATE
+                    SET price = EXCLUDED.price, volume = EXCLUDED.volume
+                """,
+                    item_config['market_hash_name'],
+                    item_config['appid'],
+                    date_string,
+                    float(price),
+                    volume
+                )
+
+    async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
+        """Fallback: Store price history in SQLite if TimescaleDB not available."""
+        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+
+        # Create table if not exists
+        await self.sqlite_conn.execute("""
+            CREATE TABLE IF NOT EXISTS price_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                market_hash_name TEXT NOT NULL,
+                appid INTEGER,
+                date_string TEXT,
+                price REAL,
+                volume TEXT,
+                UNIQUE(market_hash_name, date_string)
+            )
+        """)
+
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_history_item_date
+            ON price_history(market_hash_name, date_string)
+        """)
+
+        for price_point in data.prices:
+            date_string, price, volume = price_point
+
+            await self.sqlite_conn.execute("""
+                INSERT INTO price_history (
+                    market_hash_name, appid, date_string, price, volume
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(market_hash_name, date_string) DO UPDATE
+                SET price = excluded.price, volume = excluded.volume
+            """, (
+                item_config['market_hash_name'],
+                item_config['appid'],
+                date_string,
+                float(price),
+                volume
+            ))
+
+        await self.sqlite_conn.commit()
+
+
+# ============================================================================
+# Async context manager usage example
+# ============================================================================
+
+async def example_usage():
+    """Example of how schedulers will use DataWizard."""
+    async with DataWizard(
+        sqlite_path="market_data.db",
+        timescale_dsn="postgresql://user:pass@localhost/cs2market"  # Optional
+    ) as wizard:
+        # After fetching data from API:
+        # result = await client.fetch_price_overview(...)
+        # await wizard.store_data(result, item_config)
+        pass

@@ -1,0 +1,91 @@
+GET /market/priceoverview:
+{
+    "success": true,
+    "lowest_price": "0,03€",
+    "volume": "435",
+    "median_price": "0,01€"
+}
+;
+GET /market/itemordershistogram:
+{
+    "success": 1,
+    "sell_order_count": 0,
+    "sell_order_price": null,
+    "sell_order_table": null,
+    "buy_order_count": "2",
+    "buy_order_price": "0,03€",
+    "buy_order_table": [
+        {
+            "price": "0,03€",
+            "quantity": "2"
+        }
+    ],
+    "highest_buy_order": "3",
+    "lowest_sell_order": null,
+    "buy_order_graph": [
+        [
+            0.03,
+            2,
+            "2 buy orders at 0,03€ or higher"
+        ]
+    ],
+    "sell_order_graph": [],
+    "graph_max_y": 2,
+    "graph_min_x": 0.03,
+    "graph_max_x": 0,
+    "price_prefix": "",
+    "price_suffix": "€"
+}
+;
+GET /market/itemordersactivity
+{
+  "success": 1,
+  "activity": [
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/1c0b5c37a442a2d39f32902ec42f2e26ba6a142e.jpg\"></span><span class=\"market_ticker_name\">猪油仔张世通</span> purchased this item from <span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/59c6b624416737f96284f140df88facff5929e7b.jpg\"></span><span class=\"market_ticker_name\">CJ</span> for $1.17</span>\r\n</div>\r\n",
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/1c0b5c37a442a2d39f32902ec42f2e26ba6a142e.jpg\"></span><span class=\"market_ticker_name\">猪油仔张世通</span> purchased this item from <span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/59c6b624416737f96284f140df88facff5929e7b.jpg\"></span><span class=\"market_ticker_name\">CJ</span> for $1.17</span>\r\n</div>\r\n",
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/1cb2f12a6387e921e2c4dbad4ddeced55d7f3ac6.jpg\"></span><span class=\"market_ticker_name\">Bratishka_Michael</span> purchased this item from <span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/8637c2ec93ce4c21c51943d859da8eb97412d9ab.jpg\"></span><span class=\"market_ticker_name\">KarTuX</span> for $1.17</span>\r\n</div>\r\n",
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/1c0b5c37a442a2d39f32902ec42f2e26ba6a142e.jpg\"></span><span class=\"market_ticker_name\">猪油仔张世通</span> purchased this item from <span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/59c6b624416737f96284f140df88facff5929e7b.jpg\"></span><span class=\"market_ticker_name\">CJ</span> for $1.17</span>\r\n</div>\r\n",
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/1c0b5c37a442a2d39f32902ec42f2e26ba6a142e.jpg\"></span><span class=\"market_ticker_name\">猪油仔张世通</span> purchased this item from <span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/59c6b624416737f96284f140df88facff5929e7b.jpg\"></span><span class=\"market_ticker_name\">CJ</span> for $1.17</span>\r\n</div>\r\n",
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/1c0b5c37a442a2d39f32902ec42f2e26ba6a142e.jpg\"></span><span class=\"market_ticker_name\">猪油仔张世通</span> purchased this item from <span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/59c6b624416737f96284f140df88facff5929e7b.jpg\"></span><span class=\"market_ticker_name\">CJ</span> for $1.17</span>\r\n</div>\r\n",
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/07935eb58c5b48279c863aa7f909bfbf4990ad00.jpg\"></span><span class=\"market_ticker_name\">MacieQGG_PL</span> created 2 buy orders for $1.15</span>\r\n</div>\r\n",
+    "<div class=\"market_activity_line_item ellipsis\">\r\n\t<span><span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/53f0b9266bb33fead29956dff728d94c6dc62247.jpg\"></span><span class=\"market_ticker_name\">潘文东</span> purchased this item from <span class=\"market_ticker_avatar\"><img src=\"https://avatars.cloudflare.steamstatic.com/1867aba836ff505ea72487490b754a103da40456.jpg\"></span><span class=\"market_ticker_name\">SwIzZ|Made</span> for $1.16</span>\r\n</div>\r\n"
+  ],
+  "timestamp": 1681576662
+}
+;
+GET /market/pricehistory:
+{
+  "success": true,
+  "price_prefix": "",
+  "price_suffix": "€",
+  "prices": [
+    [
+      "Jul 02 2014 01: +0",
+      283.697,
+      "2"
+    ],
+    [
+      ... (All the records inbetween)
+    ],
+    [
+      "May 19 2020 01: +0",
+      1621.348,
+      "1"
+    ],
+    [
+      "Aug 13 2020 01: +0",
+      1625.398,
+      "1"
+    ],
+    [
+      "Sep 28 2020 01: +0",
+      1690.921,
+      "1"
+    ],
+    [
+      "Mar 16 2023 01: +0",
+      1662.859,
+      "1"
+    ]
+  ]
+}
