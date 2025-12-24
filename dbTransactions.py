@@ -136,18 +136,16 @@ class DataWizard:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 market_hash_name TEXT NOT NULL,
-                appid INTEGER,
+                currency TEXT NOT NULL,
                 buy_order_table TEXT,
                 sell_order_table TEXT,
-                buy_order_count TEXT,
-                sell_order_count TEXT,
-                buy_order_price TEXT,
-                sell_order_price TEXT,
-                highest_buy_order TEXT,
-                lowest_sell_order TEXT,
-                price_prefix TEXT,
-                price_suffix TEXT,
-                success INTEGER
+                buy_order_graph TEXT,
+                sell_order_graph TEXT,
+                buy_order_count INTEGER,
+                sell_order_count INTEGER,
+                highest_buy_order REAL,
+                lowest_sell_order REAL,
+                success INTEGER NOT NULL
             )
         """)
 
@@ -162,10 +160,12 @@ class DataWizard:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 market_hash_name TEXT NOT NULL,
-                appid INTEGER,
+                currency TEXT NOT NULL,
+                activity_raw TEXT,
                 parsed_activities TEXT,
-                raw_timestamp INTEGER,
-                success INTEGER
+                activity_count INTEGER,
+                steam_timestamp INTEGER NOT NULL,
+                success INTEGER NOT NULL
             )
         """)
 
@@ -274,32 +274,43 @@ class DataWizard:
         """Store order book histogram snapshot to SQLite."""
         assert self.sqlite_conn is not None, "SQLite connection not initialized"
 
-        # Convert order tables to JSON
-        buy_orders_json = json.dumps([order.dict() for order in data.buy_order_table]) if data.buy_order_table else None
-        sell_orders_json = json.dumps([order.dict() for order in data.sell_order_table]) if data.sell_order_table else None
+        # Convert order tables to JSON (keep original structure with price/quantity)
+        buy_orders_json = json.dumps([order.model_dump() for order in data.buy_order_table]) if data.buy_order_table else None
+        sell_orders_json = json.dumps([order.model_dump() for order in data.sell_order_table]) if data.sell_order_table else None
+
+        # Convert graph data to JSON (arrays of [price, quantity, label])
+        buy_graph_json = json.dumps(data.buy_order_graph) if data.buy_order_graph else None
+        sell_graph_json = json.dumps(data.sell_order_graph) if data.sell_order_graph else None
+
+        # Parse numeric fields
+        buy_count = int(data.buy_order_count) if isinstance(data.buy_order_count, str) and data.buy_order_count.isdigit() else (data.buy_order_count if isinstance(data.buy_order_count, int) else None)
+        sell_count = int(data.sell_order_count) if isinstance(data.sell_order_count, str) and data.sell_order_count.isdigit() else (data.sell_order_count if isinstance(data.sell_order_count, int) else None)
+        highest_buy = self._parse_steam_price(data.highest_buy_order)
+        lowest_sell = self._parse_steam_price(data.lowest_sell_order)
+
+        # Extract currency from price_suffix or buy_order_price
+        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.buy_order_price or "") or item_config.get('currency', 'USD')
 
         await self.sqlite_conn.execute("""
             INSERT INTO orders_histogram (
-                market_hash_name, appid,
+                market_hash_name, currency,
                 buy_order_table, sell_order_table,
+                buy_order_graph, sell_order_graph,
                 buy_order_count, sell_order_count,
-                buy_order_price, sell_order_price,
                 highest_buy_order, lowest_sell_order,
-                price_prefix, price_suffix, success
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                success
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             item_config['market_hash_name'],
-            item_config['appid'],
+            currency,
             buy_orders_json,
             sell_orders_json,
-            str(data.buy_order_count) if data.buy_order_count else None,
-            str(data.sell_order_count) if data.sell_order_count else None,
-            data.buy_order_price,
-            data.sell_order_price,
-            data.highest_buy_order,
-            data.lowest_sell_order,
-            data.price_prefix,
-            data.price_suffix,
+            buy_graph_json,
+            sell_graph_json,
+            buy_count,
+            sell_count,
+            highest_buy,
+            lowest_sell,
             int(data.success)
         ))
         await self.sqlite_conn.commit()
@@ -308,18 +319,36 @@ class DataWizard:
         """Store trade activity snapshot to SQLite."""
         assert self.sqlite_conn is not None, "SQLite connection not initialized"
 
-        # Convert parsed activities to JSON
-        activities_json = json.dumps([activity.dict() for activity in data.parsed_activities]) if data.parsed_activities else None
+        # Store raw HTML activity as JSON array of strings
+        activity_raw_json = json.dumps(data.activity) if data.activity else None
+
+        # Convert parsed activities to JSON (use model_dump instead of deprecated dict)
+        parsed_json = json.dumps([activity.model_dump() for activity in data.parsed_activities]) if data.parsed_activities else None
+
+        # Count activities
+        activity_count = len(data.parsed_activities) if data.parsed_activities else 0
+
+        # Extract currency from first parsed activity price (if available)
+        currency = None
+        if data.parsed_activities and len(data.parsed_activities) > 0:
+            first_price = data.parsed_activities[0].price
+            currency = self._extract_currency(first_price)
+
+        # Fallback to config currency
+        currency = currency or item_config.get('currency', 'USD')
 
         await self.sqlite_conn.execute("""
             INSERT INTO orders_activity (
-                market_hash_name, appid,
-                parsed_activities, raw_timestamp, success
-            ) VALUES (?, ?, ?, ?, ?)
+                market_hash_name, currency,
+                activity_raw, parsed_activities,
+                activity_count, steam_timestamp, success
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             item_config['market_hash_name'],
-            item_config['appid'],
-            activities_json,
+            currency,
+            activity_raw_json,
+            parsed_json,
+            activity_count,
             data.timestamp,
             int(data.success)
         ))
