@@ -117,11 +117,11 @@ class DataWizard:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 market_hash_name TEXT NOT NULL,
-                appid INTEGER,
-                lowest_price TEXT,
-                median_price TEXT,
-                volume TEXT,
-                success INTEGER
+                currency TEXT NOT NULL,
+                lowest_price REAL,
+                median_price REAL,
+                volume INTEGER,
+                success INTEGER NOT NULL
             )
         """)
 
@@ -250,16 +250,22 @@ class DataWizard:
         """Store price overview snapshot to SQLite."""
         assert self.sqlite_conn is not None, "SQLite connection not initialized"
 
+        # Parse prices and extract currency
+        lowest_price_float = self._parse_steam_price(data.lowest_price)
+        median_price_float = self._parse_steam_price(data.median_price)
+        volume_int = self._parse_volume(data.volume)
+        currency = self._extract_currency(data.lowest_price or data.median_price or "") or item_config.get('currency', 'USD')
+
         await self.sqlite_conn.execute("""
             INSERT INTO price_overview (
-                market_hash_name, appid, lowest_price, median_price, volume, success
+                market_hash_name, currency, lowest_price, median_price, volume, success
             ) VALUES (?, ?, ?, ?, ?, ?)
         """, (
             item_config['market_hash_name'],
-            item_config['appid'],
-            data.lowest_price,
-            data.median_price,
-            data.volume,
+            currency,
+            lowest_price_float,
+            median_price_float,
+            volume_int,
             int(data.success)
         ))
         await self.sqlite_conn.commit()
@@ -402,6 +408,114 @@ class DataWizard:
             ))
 
         await self.sqlite_conn.commit()
+
+    # ========================================================================
+    # Utility Methods - Parse Steam's formatted strings
+    # ========================================================================
+
+    def _parse_steam_price(self, price_str: Optional[str]) -> Optional[float]:
+        """
+        Parse Steam's formatted price string to float.
+
+        Examples:
+            "0,03€" -> 0.03
+            "$5.00" -> 5.0
+            "1.234,56€" -> 1234.56
+            None -> None
+        """
+        if not price_str:
+            return None
+
+        try:
+            # Remove currency symbols and whitespace
+            cleaned = price_str.strip()
+            for symbol in ['$', '€', '£', '¥', '₽', 'pуб.', 'R$', 'CDN$', 'A$', 'HK$', 'S$', '₩', '₴', 'CHF', 'kr', 'zł', 'R', '฿']:
+                cleaned = cleaned.replace(symbol, '')
+
+            cleaned = cleaned.strip()
+
+            # Handle European format (1.234,56) vs US format (1,234.56)
+            if ',' in cleaned and '.' in cleaned:
+                # Both present - determine which is decimal separator
+                comma_pos = cleaned.rfind(',')
+                dot_pos = cleaned.rfind('.')
+                if comma_pos > dot_pos:
+                    # European format: 1.234,56
+                    cleaned = cleaned.replace('.', '').replace(',', '.')
+                else:
+                    # US format: 1,234.56
+                    cleaned = cleaned.replace(',', '')
+            elif ',' in cleaned:
+                # Only comma - check if it's thousands or decimal
+                # If last comma has 2 digits after, it's decimal
+                parts = cleaned.split(',')
+                if len(parts[-1]) == 2:
+                    # Decimal separator: 0,03
+                    cleaned = cleaned.replace(',', '.')
+                else:
+                    # Thousands separator: 1,000
+                    cleaned = cleaned.replace(',', '')
+
+            return float(cleaned)
+        except (ValueError, AttributeError):
+            return None
+
+    def _parse_volume(self, volume_str: Optional[str]) -> Optional[int]:
+        """
+        Parse Steam's volume string to integer.
+
+        Examples:
+            "435" -> 435
+            "1,234" -> 1234
+            None -> None
+        """
+        if not volume_str:
+            return None
+
+        try:
+            # Remove commas (thousands separator)
+            cleaned = volume_str.replace(',', '').replace('.', '')
+            return int(cleaned)
+        except (ValueError, AttributeError):
+            return None
+
+    def _extract_currency(self, price_str: str) -> Optional[str]:
+        """
+        Extract currency code from Steam's price string.
+
+        Maps currency symbols to ISO 4217 codes.
+        Returns None if currency cannot be determined.
+        """
+        if not price_str:
+            return None
+
+        # Currency symbol to ISO code mapping
+        currency_map = {
+            '$': 'USD',
+            '€': 'EUR',
+            '£': 'GBP',
+            '¥': 'JPY',
+            '₽': 'RUB',
+            'pуб.': 'RUB',
+            'R$': 'BRL',
+            'CDN$': 'CAD',
+            'A$': 'AUD',
+            'HK$': 'HKD',
+            'S$': 'SGD',
+            '₩': 'KRW',
+            '₴': 'UAH',
+            'CHF': 'CHF',
+            'kr': 'SEK',  # Could also be NOK or DKK
+            'zł': 'PLN',
+            'R': 'ZAR',
+            '฿': 'THB',
+        }
+
+        for symbol, code in currency_map.items():
+            if symbol in price_str:
+                return code
+
+        return None
 
 
 # ============================================================================
