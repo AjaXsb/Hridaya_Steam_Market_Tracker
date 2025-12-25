@@ -193,10 +193,9 @@ class DataWizard:
                 CREATE TABLE IF NOT EXISTS price_history (
                     time TIMESTAMPTZ NOT NULL,
                     market_hash_name TEXT NOT NULL,
-                    appid INTEGER,
-                    date_string TEXT,
-                    price DOUBLE PRECISION,
-                    volume TEXT,
+                    currency TEXT NOT NULL,
+                    price DOUBLE PRECISION NOT NULL,
+                    volume INTEGER NOT NULL,
                     fetched_at TIMESTAMPTZ DEFAULT NOW(),
                     PRIMARY KEY (market_hash_name, time)
                 )
@@ -372,28 +371,36 @@ class DataWizard:
 
     async def _store_price_history_timescale(self, data: PriceHistoryData, item_config: dict):
         """Insert price history points into TimescaleDB hypertable."""
+        # Extract currency from price_prefix or price_suffix
+        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or item_config.get('currency', 'USD')
+
         async with self.timescale_pool.acquire() as conn:
             for price_point in data.prices:
                 # price_point is [date_string, price_float, volume_string]
                 date_string, price, volume = price_point
 
-                # Parse Steam's date format to timestamptz
-                # Example: "Jul 02 2014 01: +0" -> needs parsing
-                # For now, use date_string as-is and convert to timestamp
-                # TODO: Implement proper date parsing
+                # Parse Steam's datetime format to proper timestamp
+                parsed_time = self._parse_steam_datetime(date_string)
+                if not parsed_time:
+                    continue  # Skip invalid dates
+
+                # Parse volume to integer
+                volume_int = self._parse_volume(volume)
+                if volume_int is None:
+                    volume_int = 0
 
                 await conn.execute("""
                     INSERT INTO price_history (
-                        time, market_hash_name, appid, date_string, price, volume
-                    ) VALUES (NOW(), $1, $2, $3, $4, $5)
+                        time, market_hash_name, currency, price, volume
+                    ) VALUES ($1, $2, $3, $4, $5)
                     ON CONFLICT (market_hash_name, time) DO UPDATE
-                    SET price = EXCLUDED.price, volume = EXCLUDED.volume
+                    SET price = EXCLUDED.price, volume = EXCLUDED.volume, currency = EXCLUDED.currency
                 """,
+                    parsed_time,
                     item_config['market_hash_name'],
-                    item_config['appid'],
-                    date_string,
+                    currency,
                     float(price),
-                    volume
+                    volume_int
                 )
 
     async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
@@ -404,36 +411,49 @@ class DataWizard:
         await self.sqlite_conn.execute("""
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                time DATETIME NOT NULL,
                 market_hash_name TEXT NOT NULL,
-                appid INTEGER,
-                date_string TEXT,
-                price REAL,
-                volume TEXT,
-                UNIQUE(market_hash_name, date_string)
+                currency TEXT NOT NULL,
+                price REAL NOT NULL,
+                volume INTEGER NOT NULL,
+                fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(market_hash_name, time)
             )
         """)
 
         await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_history_item_date
-            ON price_history(market_hash_name, date_string)
+            CREATE INDEX IF NOT EXISTS idx_history_item_time
+            ON price_history(market_hash_name, time DESC)
         """)
+
+        # Extract currency from price_prefix or price_suffix
+        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or item_config.get('currency', 'USD')
 
         for price_point in data.prices:
             date_string, price, volume = price_point
 
+            # Parse Steam's datetime format to proper timestamp
+            parsed_time = self._parse_steam_datetime(date_string)
+            if not parsed_time:
+                continue  # Skip invalid dates
+
+            # Parse volume to integer
+            volume_int = self._parse_volume(volume)
+            if volume_int is None:
+                volume_int = 0
+
             await self.sqlite_conn.execute("""
                 INSERT INTO price_history (
-                    market_hash_name, appid, date_string, price, volume
+                    time, market_hash_name, currency, price, volume
                 ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(market_hash_name, date_string) DO UPDATE
-                SET price = excluded.price, volume = excluded.volume
+                ON CONFLICT(market_hash_name, time) DO UPDATE
+                SET price = excluded.price, volume = excluded.volume, currency = excluded.currency
             """, (
+                parsed_time.strftime('%Y-%m-%d %H:%M:%S'),  # SQLite datetime format
                 item_config['market_hash_name'],
-                item_config['appid'],
-                date_string,
+                currency,
                 float(price),
-                volume
+                volume_int
             ))
 
         await self.sqlite_conn.commit()
@@ -545,6 +565,45 @@ class DataWizard:
                 return code
 
         return None
+
+    def _parse_steam_datetime(self, date_str: str) -> Optional[datetime]:
+        """
+        Parse Steam's datetime format to Python datetime.
+
+        Examples:
+            "Jul 02 2014 01: +0" -> datetime(2014, 7, 2, 1, 0, tzinfo=UTC)
+            "Dec 25 2023 14: +0" -> datetime(2023, 12, 25, 14, 0, tzinfo=UTC)
+
+        Steam's format: "MMM DD YYYY HH: +TZ"
+        The "+0" is UTC offset (usually +0 for UTC)
+        """
+        if not date_str:
+            return None
+
+        try:
+            # Steam format: "Jul 02 2014 01: +0"
+            # Split by space to handle the weird ": +0" format
+            parts = date_str.strip().split()
+
+            if len(parts) >= 4:
+                # Parts: ['Jul', '02', '2014', '01:', '+0']
+                month = parts[0]
+                day = parts[1]
+                year = parts[2]
+                hour = parts[3].rstrip(':')  # Remove trailing colon
+
+                # Reconstruct without timezone (assume UTC)
+                clean_str = f"{month} {day} {year} {hour}"
+
+                # Parse to datetime
+                dt = datetime.strptime(clean_str, "%b %d %Y %H")
+
+                # Return as UTC (Steam uses UTC for price history)
+                return dt.replace(tzinfo=None)  # SQLite doesn't handle timezones well
+
+            return None
+        except (ValueError, IndexError, AttributeError):
+            return None
 
 
 # ============================================================================
