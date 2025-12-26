@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "mcp__serena__list_dir",
-      "mcp__serena__find_symbol"
+      "mcp__serena__find_symbol",
+      "Bash(python snoozerScheduler.py:*)",
+      "Bash(sqlite3:*)"
     ]
   }
 }

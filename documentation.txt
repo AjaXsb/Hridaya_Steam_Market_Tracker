@@ -5,4 +5,15 @@ clockworkScheduler: once started, executes skins every hour
 rateLimiter: maintains a list of calls made in the last 60 seconds
 UTILS: because we need them in 2025 where the same numbers and symbols mean different thing to machines and humans. im held back with the technology of my time
 orchestrator: validates the config and starts all the schedulers
-database: persistent and violatile  
+
+
+database:
+order book, price and activity api
+    SQlite
+
+price history api
+  TimescaleDB Features:
+  - Hypertable partitioning
+  - 7-day compression (70-95% space savings)
+  - 90-day retention policy
+  - Scales to billions of rows

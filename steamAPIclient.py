@@ -94,6 +94,7 @@ class SteamAPIClient:
 
         url = f"{self.BASE_URL}itemordershistogram"
         params = {
+            "norender": 1,
             "appid": appid,
             "item_nameid": item_nameid,
             "currency": currency,

@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import List, Optional
 from steamAPIclient import SteamAPIClient
 from loadConfig import load_config_from_yaml
+from SQLinserts import DataWizard
 
 
 class LiveScheduler:
@@ -30,6 +31,7 @@ class LiveScheduler:
         self.config = load_config_from_yaml(config_path)
         self.live_items = self._load_live_items()
         self.steam_client: Optional[SteamAPIClient] = None  # Will be initialized in run()
+        self.data_wizard: Optional[DataWizard] = None  # Will be initialized in run()
 
     def _load_live_items(self) -> List[dict]:
         """
@@ -135,20 +137,25 @@ class LiveScheduler:
                         two_factor=0
                     )
                     # Activity HTML is already parsed by the client
-                    if result.parsed_activities:
-                        print(f"  ✓ Success: Parsed {len(result.parsed_activities)} activity entries")
-                    else:
-                        print(f"  ✓ Success: No activity (empty list is normal)")
+                    # Success message will be printed after DB storage
                 case _:
                     raise ValueError(f"Unknown API endpoint: {item['apiid']}")
-            
+
+            # Store result to database
+            await self.data_wizard.store_data(result, item)
+
             # Update last_update timestamp
             item['last_update'] = datetime.now()
 
-            # TODO: Store result to database/file
-
-            if item['apiid'] != 'itemordersactivity':
-                print(f"  ✓ Success: {result.success}")
+            # Print success message
+            if item['apiid'] == 'itemordersactivity':
+                # Type check: result is OrdersActivityData here
+                from dataClasses import OrdersActivityData
+                if isinstance(result, OrdersActivityData):
+                    activity_count = len(result.parsed_activities) if result.parsed_activities else 0
+                    print(f"  ✓ Success: {activity_count} activities | Stored to DB")
+            else:
+                print(f"  ✓ Success: {result.success} | Stored to DB")
 
         except Exception as e:
             print(f"  ✗ Error: {e}")
@@ -163,9 +170,11 @@ class LiveScheduler:
         3. If max_urgency < 1.0, sleep until next item is overdue
         4. Repeat forever
         """
-        async with SteamAPIClient() as client:
+        async with SteamAPIClient() as client, DataWizard() as wizard:
             self.steam_client = client
+            self.data_wizard = wizard
             print(f"Live Scheduler started with {len(self.live_items)} items")
+            print(f"Database: SQLite at market_data.db")
 
             while True:
                 mostUrgentItemTuple = self.find_most_urgent_item()

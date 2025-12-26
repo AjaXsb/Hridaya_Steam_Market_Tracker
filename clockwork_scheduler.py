@@ -7,9 +7,10 @@ since Steam only updates historical data once per hour.
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Optional
 from steamAPIclient import SteamAPIClient
 from loadConfig import load_config_from_yaml
+from SQLinserts import DataWizard
 
 
 class ClockworkScheduler:                                                                                   
@@ -29,7 +30,8 @@ class ClockworkScheduler:
         """
         self.config = load_config_from_yaml(config_path)
         self.history_items = self._load_history_items()
-        self.steam_client = None  # Will be initialized in run()
+        self.steam_client: Optional[SteamAPIClient] = None  # Will be initialized in run()
+        self.data_wizard: Optional[DataWizard] = None  # Will be initialized in run()
 
     def _load_history_items(self) -> List[dict]:
         """
@@ -93,10 +95,12 @@ class ClockworkScheduler:
                     market_hash_name=item['market_hash_name']
                 )
 
+                # Store result to database
+                await self.data_wizard.store_data(result, item)
+
                 item['last_update'] = datetime.now()
 
-                # TODO: Store result to database/file
-                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} data points")
+                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} data points | Stored to DB")
 
             except Exception as e:
                 print(f"  ✗ {item['market_hash_name']}: Error - {e}")
@@ -121,9 +125,11 @@ class ClockworkScheduler:
         4. Execute all pricehistory items
         5. Repeat from step 2
         """
-        async with SteamAPIClient() as client:
+        async with SteamAPIClient() as client, DataWizard() as wizard:
             self.steam_client = client
+            self.data_wizard = wizard
             print(f"Clockwork Scheduler started with {len(self.history_items)} items")
+            print(f"Database: SQLite at market_data.db")
 
             # Run once immediately
             await self.run_initial_fetch()
