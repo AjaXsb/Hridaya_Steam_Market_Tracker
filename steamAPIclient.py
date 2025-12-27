@@ -1,6 +1,7 @@
 import os
 import json
 import aiohttp
+from typing import Optional
 from dotenv import load_dotenv
 from RateLimiter import RateLimiter
 from dataClasses import (
@@ -25,14 +26,15 @@ class SteamAPIClient:
 
     BASE_URL = "https://steamcommunity.com/market/"
 
-    def __init__(self):
+    def __init__(self, rate_limiter: Optional[RateLimiter] = None):
         """
         Initialize the Steam API client.
 
         Args:
-            api_key: Optional Steam Web API key for authenticated requests
+            rate_limiter: Optional shared RateLimiter instance. If None, creates its own.
+                         When using orchestrator, a shared instance should be passed.
         """
-        self.rate_limiter = RateLimiter()
+        self.rate_limiter = rate_limiter if rate_limiter is not None else RateLimiter()
         self.session = aiohttp.ClientSession()
 
     async def close(self):

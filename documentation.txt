@@ -1,19 +1,30 @@
 config.yaml: entry point
 dataClasses: defines the data classes for config and steam market data
-snoozerScheduler: takes the most urgent skin, executes it and sleeps till next execution
+snoozerScheduler (LiveScheduler): takes the most urgent skin, executes it and sleeps till next execution
 clockworkScheduler: once started, executes skins every hour
 rateLimiter: maintains a list of calls made in the last 60 seconds
 UTILS: because we need them in 2025 where the same numbers and symbols mean different thing to machines and humans. im held back with the technology of my time
-orchestrator: validates the config and starts all the schedulers
+orchestrator: backend entry point - loads config, creates shared RateLimiter, starts all schedulers
+SQLinserts (DataWizard): routes data to SQLite/TimescaleDB, handles batch inserts
 
+Shared RateLimiter:
+- Orchestrator creates ONE RateLimiter instance
+- Passed to both LiveScheduler and ClockworkScheduler
+- Both schedulers share the same rate limit (15 req/60s total, not per scheduler)
+- Critical for API compliance when running multiple schedulers
 
-database:
-order book, price and activity api
-    SQlite
+Database:
+- SQLite: price_overview, orders_histogram, orders_activity (operational snapshots)
+- TimescaleDB: price_history (time-series analysis)
+  * Hypertable partitioning, 7-day compression, 90-day retention
 
-price history api
-  TimescaleDB Features:
-  - Hypertable partitioning
-  - 7-day compression (70-95% space savings)
-  - 90-day retention policy
-  - Scales to billions of rows
+SQLite Config (SQLinserts.py line 105-110):
+- synchronous=NORMAL: 2-3x faster writes vs FULL, safe enough for market data
+- cache_size=-64000: 64MB cache (negative = KB)
+- mmap_size=268435456: 256MB memory-mapped I/O
+- page_size=4096: optimal for SSDs
+
+TimescaleDB Pool (SQLinserts.py line 34-35):
+- min=10, max=100 connections (configurable)
+- Supports thousands of concurrent devices
+- Why pooling: reuse connections, avoid startup overhead

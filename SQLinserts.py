@@ -1,11 +1,3 @@
-"""
-Database Transaction Manager - Routes data to appropriate storage.
-
-Uses hybrid architecture:
-- SQLite for operational snapshots (price_overview, histogram, activity)
-- TimescaleDB for analytical time-series (price_history)
-"""
-
 import json
 import aiosqlite
 import asyncpg
@@ -19,7 +11,7 @@ from dataClasses import (
 )
 
 
-class DataWizard:
+class SQLinserts:
     """
     Manages data persistence across SQLite and TimescaleDB.
 
@@ -30,7 +22,9 @@ class DataWizard:
     def __init__(
         self,
         sqlite_path: str = "market_data.db",
-        timescale_dsn: Optional[str] = None
+        timescale_dsn: Optional[str] = None,
+        timescale_pool_min: int = 10,
+        timescale_pool_max: int = 100
     ):
         """
         Initialize database connections.
@@ -40,9 +34,13 @@ class DataWizard:
             timescale_dsn: PostgreSQL connection string for TimescaleDB
                           (e.g., "postgresql://user:pass@localhost/dbname")
                           If None, price_history will also use SQLite
+            timescale_pool_min: Minimum connections in TimescaleDB pool (default: 10)
+            timescale_pool_max: Maximum connections in TimescaleDB pool (default: 100)
         """
         self.sqlite_path = sqlite_path
         self.timescale_dsn = timescale_dsn
+        self.timescale_pool_min = timescale_pool_min
+        self.timescale_pool_max = timescale_pool_max
         self.sqlite_conn: Optional[aiosqlite.Connection] = None
         self.timescale_pool: Optional[asyncpg.Pool] = None
 
@@ -101,8 +99,13 @@ class DataWizard:
         """Create SQLite connection and tables for operational data."""
         self.sqlite_conn = await aiosqlite.connect(self.sqlite_path)
 
-        # Enable WAL mode for better concurrency
-        await self.sqlite_conn.execute("PRAGMA journal_mode=WAL")
+        # Performance optimizations for SQLite
+        await self.sqlite_conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for concurrency
+        await self.sqlite_conn.execute("PRAGMA synchronous=NORMAL")  # Balance safety vs speed
+        await self.sqlite_conn.execute("PRAGMA cache_size=-64000")  # 64MB cache (negative = KB)
+        await self.sqlite_conn.execute("PRAGMA temp_store=MEMORY")  # Store temp tables in RAM
+        await self.sqlite_conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+        await self.sqlite_conn.execute("PRAGMA page_size=4096")  # Optimal page size for modern systems
 
         # Create tables
         await self._create_sqlite_tables()
@@ -182,7 +185,13 @@ class DataWizard:
 
     async def _initialize_timescale(self):
         """Create TimescaleDB connection pool and hypertable."""
-        self.timescale_pool = await asyncpg.create_pool(self.timescale_dsn)
+        self.timescale_pool = await asyncpg.create_pool(
+            self.timescale_dsn,
+            min_size=self.timescale_pool_min,
+            max_size=self.timescale_pool_max,
+            command_timeout=60,  # 60 second query timeout
+            max_inactive_connection_lifetime=300  # 5 minute idle connection lifetime
+        )
         await self._create_timescale_tables()
 
     async def _create_timescale_tables(self):
@@ -370,41 +379,53 @@ class DataWizard:
             await self._store_price_history_sqlite(data, item_config)
 
     async def _store_price_history_timescale(self, data: PriceHistoryData, item_config: dict):
-        """Insert price history points into TimescaleDB hypertable."""
+        """Insert price history points into TimescaleDB hypertable using batch inserts."""
         # Extract currency from price_prefix or price_suffix
         currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or item_config.get('currency', 'USD')
 
+        # Parse all price points upfront (fail fast on bad data)
+        records = []
+        for price_point in data.prices:
+            # price_point is [date_string, price_float, volume_string]
+            date_string, price, volume = price_point
+
+            # Parse Steam's datetime format to proper timestamp
+            parsed_time = self._parse_steam_datetime(date_string)
+            if not parsed_time:
+                continue  # Skip invalid dates
+
+            # Parse volume to integer
+            volume_int = self._parse_volume(volume)
+            if volume_int is None:
+                volume_int = 0
+
+            records.append((
+                parsed_time,
+                item_config['market_hash_name'],
+                currency,
+                float(price),
+                volume_int
+            ))
+
+        if not records:
+            return  # Nothing to insert
+
+        # Batch insert with chunking to avoid memory issues
+        BATCH_SIZE = 100
         async with self.timescale_pool.acquire() as conn:
-            for price_point in data.prices:
-                # price_point is [date_string, price_float, volume_string]
-                date_string, price, volume = price_point
-
-                # Parse Steam's datetime format to proper timestamp
-                parsed_time = self._parse_steam_datetime(date_string)
-                if not parsed_time:
-                    continue  # Skip invalid dates
-
-                # Parse volume to integer
-                volume_int = self._parse_volume(volume)
-                if volume_int is None:
-                    volume_int = 0
-
-                await conn.execute("""
-                    INSERT INTO price_history (
-                        time, market_hash_name, currency, price, volume
-                    ) VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (market_hash_name, time) DO UPDATE
-                    SET price = EXCLUDED.price, volume = EXCLUDED.volume, currency = EXCLUDED.currency
-                """,
-                    parsed_time,
-                    item_config['market_hash_name'],
-                    currency,
-                    float(price),
-                    volume_int
-                )
+            async with conn.transaction():
+                for i in range(0, len(records), BATCH_SIZE):
+                    batch = records[i:i + BATCH_SIZE]
+                    await conn.executemany("""
+                        INSERT INTO price_history (
+                            time, market_hash_name, currency, price, volume
+                        ) VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (market_hash_name, time) DO UPDATE
+                        SET price = EXCLUDED.price, volume = EXCLUDED.volume, currency = EXCLUDED.currency
+                    """, batch)
 
     async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
-        """Fallback: Store price history in SQLite if TimescaleDB not available."""
+        """Fallback: Store price history in SQLite if TimescaleDB not available using batch inserts."""
         assert self.sqlite_conn is not None, "SQLite connection not initialized"
 
         # Create table if not exists
@@ -429,6 +450,8 @@ class DataWizard:
         # Extract currency from price_prefix or price_suffix
         currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or item_config.get('currency', 'USD')
 
+        # Parse all price points upfront
+        records = []
         for price_point in data.prices:
             date_string, price, volume = price_point
 
@@ -442,19 +465,28 @@ class DataWizard:
             if volume_int is None:
                 volume_int = 0
 
-            await self.sqlite_conn.execute("""
-                INSERT INTO price_history (
-                    time, market_hash_name, currency, price, volume
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(market_hash_name, time) DO UPDATE
-                SET price = excluded.price, volume = excluded.volume, currency = excluded.currency
-            """, (
+            records.append((
                 parsed_time.strftime('%Y-%m-%d %H:%M:%S'),  # SQLite datetime format
                 item_config['market_hash_name'],
                 currency,
                 float(price),
                 volume_int
             ))
+
+        if not records:
+            return  # Nothing to insert
+
+        # Batch insert with chunking
+        BATCH_SIZE = 50  # SQLite performs best with smaller batches than PostgreSQL
+        for i in range(0, len(records), BATCH_SIZE):
+            batch = records[i:i + BATCH_SIZE]
+            await self.sqlite_conn.executemany("""
+                INSERT INTO price_history (
+                    time, market_hash_name, currency, price, volume
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(market_hash_name, time) DO UPDATE
+                SET price = excluded.price, volume = excluded.volume, currency = excluded.currency
+            """, batch)
 
         await self.sqlite_conn.commit()
 
@@ -612,7 +644,7 @@ class DataWizard:
 
 async def example_usage():
     """Example of how schedulers will use DataWizard."""
-    async with DataWizard(
+    async with SQLinserts(
         sqlite_path="market_data.db",
         timescale_dsn="postgresql://user:pass@localhost/cs2market"  # Optional
     ) as wizard:

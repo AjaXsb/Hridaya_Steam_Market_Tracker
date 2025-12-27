@@ -42,13 +42,17 @@ def populate_item_name_ids(config: dict) -> dict:
     """
     Populate item_nameid field for items in config that are missing it.
 
+    Items requiring item_nameid that can't be found are DISCARDED - they cannot
+    make valid API calls without this field.
+
     Args:
         config: Configuration dictionary
 
     Returns:
-        Updated configuration dictionary
+        Updated configuration dictionary with invalid items removed
     """
     item_id_map = fetch_cs2_item_name_ids()
+    items_to_remove = []
 
     for item in config.get('TRACKING_ITEMS', []):
         # Only populate if item_nameid is missing and we need it (histogram or activity)
@@ -58,9 +62,20 @@ def populate_item_name_ids(config: dict) -> dict:
 
             if market_hash_name in item_id_map:
                 item['item_nameid'] = item_id_map[market_hash_name]
-                print(f"  ✓ Found item_nameid for '{market_hash_name}': {item['item_nameid']}")
             else:
-                print(f"  ✗ Warning: No item_nameid found for '{market_hash_name}'")
+                # CRITICAL: Cannot make API calls without item_nameid - discard this item
+                print(f"  ✗ DISCARDING '{market_hash_name}' - item_nameid not found (required for {apiid})")
+                items_to_remove.append(item)
+
+    # Remove items that couldn't get their item_nameid
+    if items_to_remove:
+        original_count = len(config['TRACKING_ITEMS'])
+        config['TRACKING_ITEMS'] = [
+            item for item in config['TRACKING_ITEMS']
+            if item not in items_to_remove
+        ]
+        removed_count = original_count - len(config['TRACKING_ITEMS'])
+        print(f"  ⚠ Removed {removed_count} invalid item(s) from config")
 
     return config
 

@@ -9,8 +9,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from steamAPIclient import SteamAPIClient
+from RateLimiter import RateLimiter
 from loadConfig import load_config_from_yaml
-from SQLinserts import DataWizard
+from SQLinserts import SQLinserts
 
 
 class ClockworkScheduler:                                                                                   
@@ -21,17 +22,33 @@ class ClockworkScheduler:
     since Steam's price history data only updates once per hour.
     """
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(
+        self,
+        items: Optional[List[dict]] = None,
+        rate_limiter: Optional[RateLimiter] = None,
+        config_path: str = "config.yaml"
+    ):
         """
         Initialize the clockwork scheduler.
 
         Args:
-            config_path: Path to the YAML configuration file
+            items: Optional list of items to track. If None, loads from config.
+            rate_limiter: Optional shared RateLimiter instance. If None, client creates its own.
+            config_path: Path to the YAML configuration file (used if items is None)
         """
-        self.config = load_config_from_yaml(config_path)
-        self.history_items = self._load_history_items()
+        self.rate_limiter = rate_limiter
+
+        if items is not None:
+            self.history_items = items
+            # Initialize tracking fields for each item
+            for item in self.history_items:
+                item['last_update'] = None
+        else:
+            self.config = load_config_from_yaml(config_path)
+            self.history_items = self._load_history_items()
+
         self.steam_client: Optional[SteamAPIClient] = None  # Will be initialized in run()
-        self.data_wizard: Optional[DataWizard] = None  # Will be initialized in run()
+        self.SQLinserts: Optional[SQLinserts] = None  # Will be initialized in run()
 
     def _load_history_items(self) -> List[dict]:
         """
@@ -100,7 +117,7 @@ class ClockworkScheduler:
 
                 item['last_update'] = datetime.now()
 
-                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} data points | Stored to DB")
+                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} points")
 
             except Exception as e:
                 print(f"  ✗ {item['market_hash_name']}: Error - {e}")
@@ -125,11 +142,13 @@ class ClockworkScheduler:
         4. Execute all pricehistory items
         5. Repeat from step 2
         """
-        async with SteamAPIClient() as client, DataWizard() as wizard:
+        async with SteamAPIClient(rate_limiter=self.rate_limiter) as client, SQLinserts() as wizard:
             self.steam_client = client
             self.data_wizard = wizard
             print(f"Clockwork Scheduler started with {len(self.history_items)} items")
             print(f"Database: SQLite at market_data.db")
+            if self.rate_limiter is not None:
+                print(f"Using shared RateLimiter (orchestrated mode)")
 
             # Run once immediately
             await self.run_initial_fetch()
