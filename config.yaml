@@ -8,34 +8,34 @@ LIMITS:
 
 # SKINS
 TRACKING_ITEMS:
-  - market_hash_name: "M4A4 | Magnesium (Minimal Wear)"
+  - market_hash_name: "Revolution Case"
     appid: 730
     currency: '$'
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 1
+    polling-interval-in-seconds: 30
     apiid: 'priceoverview'
 
-  - market_hash_name: "AK-47 | Fire Serpent (Field-Tested)"
+  - market_hash_name: "AK-47 | Nightwish (Field-Tested)"
     appid: 730
     currency: '$'
     country: 'NL'
     language: 'english'
-    polling-interval-in-seconds: 2
+    polling-interval-in-seconds: 15
     apiid: 'priceoverview' 
   
-  - market_hash_name: "AWP | Neo-Noir (Factory New)"
+  - market_hash_name: "Dreams & Nightmares Case"
     appid: 730
     currency: 1  # 1 = USD
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 5
+    polling-interval-in-seconds: 30
     apiid: 'itemordershistogram' 
   
-  - market_hash_name: "AK-47 | Redline (Field-Tested)"
+  - market_hash_name: "MP9 | Starlight Protector (Field-Tested)"
     appid: 730
     currency: 1  # 1 = USD
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 9
-    apiid: 'itemordersactivity' 
+    polling-interval-in-seconds: 15
+    apiid: 'itemordershistogram' 

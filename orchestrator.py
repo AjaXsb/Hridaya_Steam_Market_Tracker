@@ -62,19 +62,34 @@ class Orchestrator:
         """
         Validate that config is feasible given rate limits.
 
-        TODO: User will write the math here to check:
-        - Can snoozer + clockwork schedulers both run without exceeding rate_limit?
-        - Are item latencies realistic given rate constraints?
-        - Should we warn or error if infeasible?
+        Calculates maximum requests per window assuming worst-case (all items synchronized).
+        Real usage will typically be lower due to urgency-based scheduling spreading requests.
 
         Args:
             rate_limit: Max requests per window
             window_seconds: Time window in seconds
             items: List of tracking items with their configs
         """
-        # Placeholder - user will implement
-        print("  Config feasibility check: TODO (user will implement)")
-        pass
+        totalReqs = 0
+
+        for item in items:
+            numberOfReqs = window_seconds // item['polling-interval-in-seconds']
+            totalReqs += numberOfReqs
+
+        if totalReqs > rate_limit:
+            print(f"\n❌ CONFIG ERROR: Infeasible configuration")
+            print(f"   Calculated: {totalReqs} requests per {window_seconds}s")
+            print(f"   Limit: {rate_limit} requests per {window_seconds}s")
+            print(f"   Adjust polling intervals or reduce tracked items")
+            exit(1)
+
+        # Success - config is feasible
+        utilization = (totalReqs / rate_limit) * 100
+        print(f"  ✓ Feasible: {totalReqs}/{rate_limit} req/{window_seconds}s ({utilization:.1f}% capacity)")
+
+        # Warn about startup burst
+        if len(items) > rate_limit:
+            print(f"  ⚠ Startup: {len(items)} items will fire initially (rate limiter will queue them)")
 
     def setup_schedulers(self):
         """Create scheduler instances with shared rate limiter."""
@@ -85,15 +100,14 @@ class Orchestrator:
         print("  ✓ Timekeeper has joined the server")
 
         # Filter items by type: live items (not pricehistory) vs history items
-        live_items = [
-            item for item in self.config['TRACKING_ITEMS']
-            if item['apiid'] != 'pricehistory'
-        ]
+        live_items = []
+        history_items = []
 
-        history_items = [
-            item for item in self.config['TRACKING_ITEMS']
-            if item['apiid'] == 'pricehistory'
-        ]
+        for item in self.config['TRACKING_ITEMS']:
+            if item['apiid'] == 'pricehistory':
+                history_items.append(item)
+            else:
+                live_items.append(item)
 
         # Create schedulers with shared rate limiter
         if live_items:
