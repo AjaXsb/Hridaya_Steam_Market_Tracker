@@ -49,13 +49,19 @@ class SteamAPIClient:
         """Async context manager exit."""
         await self.close()
 
-    async def fetch_price_overview(self, appid: int, market_hash_name: str) -> PriceOverviewData:
+    async def fetch_price_overview(
+        self,
+        appid: int,
+        market_hash_name: str,
+        currency: int = 1
+    ) -> PriceOverviewData:
         """
         Fetch price overview for a specific item.
 
         Args:
             appid: Steam application ID (e.g., 730 for CS2)
             market_hash_name: URL-encoded market hash name of the item
+            currency: Currency code (1=USD, 3=EUR, 6=RUB, etc.)
 
         Returns:
             Parsed PriceOverviewData object
@@ -66,7 +72,8 @@ class SteamAPIClient:
         url = f"{self.BASE_URL}priceoverview/"
         params = {
             "appid": appid,
-            "market_hash_name": market_hash_name
+            "market_hash_name": market_hash_name,
+            "currency": currency
         }
 
         async with self.session.get(url, params=params) as response:
@@ -76,7 +83,7 @@ class SteamAPIClient:
             return PriceOverviewData(**raw_response)
 
     async def fetch_orders_histogram(
-        self, appid: int, item_nameid: int, currency, country: str = "US", language: str = "english"
+        self, appid: int, item_nameid: int, currency: int, country: str = "US", language: str = "english"
     ) -> OrdersHistogramData:
         """
         Fetch order book histogram (buy/sell orders) for a specific item.

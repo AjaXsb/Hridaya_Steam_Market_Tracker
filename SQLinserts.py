@@ -262,7 +262,7 @@ class SQLinserts:
         lowest_price_float = self._parse_steam_price(data.lowest_price)
         median_price_float = self._parse_steam_price(data.median_price)
         volume_int = self._parse_volume(data.volume)
-        currency = self._extract_currency(data.lowest_price or data.median_price or "") or item_config.get('currency', 'USD')
+        currency = self._extract_currency(data.lowest_price or data.median_price or "") or 'USD'
 
         await self.sqlite_conn.execute("""
             INSERT INTO price_overview (
@@ -297,7 +297,7 @@ class SQLinserts:
         lowest_sell = self._parse_steam_price(data.lowest_sell_order)
 
         # Extract currency from price_suffix or buy_order_price
-        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.buy_order_price or "") or item_config.get('currency', 'USD')
+        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.buy_order_price or "") or 'USD'
 
         await self.sqlite_conn.execute("""
             INSERT INTO orders_histogram (
@@ -330,8 +330,13 @@ class SQLinserts:
         # Store raw HTML activity as JSON array of strings
         activity_raw_json = json.dumps(data.activity) if data.activity else None
 
-        # Convert parsed activities to JSON (use model_dump instead of deprecated dict)
-        parsed_json = json.dumps([activity.model_dump() for activity in data.parsed_activities]) if data.parsed_activities else None
+        # Convert parsed activities to JSON (serialize datetime properly)
+        if data.parsed_activities:
+            parsed_json = json.dumps([
+                activity.model_dump(mode='json') for activity in data.parsed_activities
+            ], default=str)  # Fallback for any remaining non-serializable types
+        else:
+            parsed_json = None
 
         # Count activities
         activity_count = len(data.parsed_activities) if data.parsed_activities else 0
@@ -342,8 +347,7 @@ class SQLinserts:
             first_price = data.parsed_activities[0].price
             currency = self._extract_currency(first_price)
 
-        # Fallback to config currency
-        currency = currency or item_config.get('currency', 'USD')
+        currency = currency or 'USD'
 
         await self.sqlite_conn.execute("""
             INSERT INTO orders_activity (
@@ -381,7 +385,7 @@ class SQLinserts:
     async def _store_price_history_timescale(self, data: PriceHistoryData, item_config: dict):
         """Insert price history points into TimescaleDB hypertable using batch inserts."""
         # Extract currency from price_prefix or price_suffix
-        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or item_config.get('currency', 'USD')
+        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or 'USD'
 
         # Parse all price points upfront (fail fast on bad data)
         records = []
@@ -448,7 +452,7 @@ class SQLinserts:
         """)
 
         # Extract currency from price_prefix or price_suffix
-        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or item_config.get('currency', 'USD')
+        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or 'USD'
 
         # Parse all price points upfront
         records = []

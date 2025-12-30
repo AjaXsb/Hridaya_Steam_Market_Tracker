@@ -172,16 +172,18 @@ class ActivityEntry(BaseModel):
     in the activity array.
 
     Attributes:
-        type: Type of activity (e.g., 'purchase', 'buy_order')
-        buyer: Buyer's username
-        seller: Seller's username (None for buy orders)
-        price: Trade price as formatted string
+        price: Trade price as string (e.g., "0.85")
+        currency: ISO currency code (e.g., "EUR", "USD")
+        action: Activity action (e.g., "Purchased", "Listed")
+        timestamp: When the activity occurred
+        raw_html: Original HTML string
     """
 
-    type: str
-    buyer: str
-    seller: Optional[str] = None
-    price: str
+    price: Optional[str] = None
+    currency: Optional[str] = None
+    action: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    raw_html: str
 
 
 class OrdersActivityData(BaseModel):

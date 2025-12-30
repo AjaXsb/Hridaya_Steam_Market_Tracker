@@ -10,32 +10,32 @@ LIMITS:
 TRACKING_ITEMS:
   - market_hash_name: "Revolution Case"
     appid: 730
-    currency: '$'
+    currency: 2
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 30
-    apiid: 'priceoverview'
+    polling-interval-in-seconds: 8
+    apiid: 'itemordersactivity'
 
   - market_hash_name: "AK-47 | Nightwish (Field-Tested)"
     appid: 730
-    currency: '$'
+    currency: 3
     country: 'NL'
     language: 'english'
-    polling-interval-in-seconds: 15
+    polling-interval-in-seconds: 60
     apiid: 'priceoverview' 
   
   - market_hash_name: "Dreams & Nightmares Case"
     appid: 730
-    currency: 1  # 1 = USD
+    currency: 2
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 30
+    polling-interval-in-seconds: 60
     apiid: 'itemordershistogram' 
   
   - market_hash_name: "MP9 | Starlight Protector (Field-Tested)"
     appid: 730
-    currency: 1  # 1 = USD
+    currency: 2
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 15
+    polling-interval-in-seconds: 60
     apiid: 'itemordershistogram' 

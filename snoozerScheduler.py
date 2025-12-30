@@ -82,7 +82,9 @@ class snoozerScheduler:
             return float('inf')
 
         delta = datetime.now() - item['last_update']
+        
         urgency = delta.total_seconds() / item['polling-interval-in-seconds']
+        print(urgency)
         return urgency
 
     def find_most_urgent_item(self) -> tuple[dict, float]:
@@ -132,23 +134,24 @@ class snoozerScheduler:
                 
                 case 'priceoverview':
                     result = await self.steam_client.fetch_price_overview(
-                        appid=item['appid'],
-                        market_hash_name=item['market_hash_name']
+                        appid=item.get('appid', 730),  # Default to CS2
+                        market_hash_name=item['market_hash_name'],  # REQUIRED
+                        currency=item.get('currency', 1)  # Default to USD
                     )
                 case 'itemordershistogram':
                     result = await self.steam_client.fetch_orders_histogram(
-                        appid=item['appid'],
-                        item_nameid=item.get('item_nameid', 0),
-                        currency=item.get('currency', 1),
-                        country=item.get('country', 'US'),
-                        language=item.get('language', 'english')
+                        appid=item.get('appid', 730),  # Default to CS2
+                        item_nameid=item['item_nameid'],  # REQUIRED
+                        currency=item.get('currency', 1),  # Default to USD
+                        country=item.get('country', 'US'),  # Default to US
+                        language=item.get('language', 'english')  # Default to english
                     )
                 case 'itemordersactivity':
                     result = await self.steam_client.fetch_orders_activity(
-                        item_nameid=item.get('item_nameid', 0),
-                        country=item.get('country', 'US'),
-                        language=item.get('language', 'english'),
-                        currency=item.get('currency', 1),
+                        item_nameid=item['item_nameid'],  # REQUIRED
+                        country=item.get('country', 'US'),  # Default to US
+                        language=item.get('language', 'english'),  # Default to english
+                        currency=item.get('currency', 1),  # Default to USD
                         two_factor=0
                     )
                     # Activity HTML is already parsed by the client
@@ -174,6 +177,14 @@ class snoozerScheduler:
                         activity_count = len(result.parsed_activities) if result.parsed_activities else 0
                         print(f"  ✓ {item['market_hash_name']}: {activity_count} activities")
 
+                        # DEBUG: Dump activities for sanity check
+                        if result.parsed_activities:
+                            print(f"  📋 Activity Details:")
+                            for i, activity in enumerate(result.parsed_activities[:5], 1):  # Show first 5
+                                print(f"      {i}. {activity.action} - {activity.price} {activity.currency} @ {activity.timestamp}")
+                            if len(result.parsed_activities) > 5:
+                                print(f"      ... and {len(result.parsed_activities) - 5} more")
+
         except Exception as e:
             print(f"  ✗ Error: {e}")
 
@@ -196,10 +207,17 @@ class snoozerScheduler:
                 print(f"Using shared RateLimiter (orchestrated mode)")
 
             while True:
-                mostUrgentItemTuple = self.find_most_urgent_item()
-                if mostUrgentItemTuple[1] >= 1.0:
-                    await self.execute_item(mostUrgentItemTuple[0])
-                else:
+                # Execute ALL items that are overdue (urgency >= 1.0)
+                executed_any = False
+                for item in self.live_items:
+                    urgency = self.calculate_urgency(item)
+                    if urgency >= 1.0:
+                        await self.execute_item(item)
+                        executed_any = True
+
+                # If nothing was urgent, sleep until the next item becomes urgent
+                if not executed_any:
+                    mostUrgentItemTuple = self.find_most_urgent_item()
                     sleep_duration = self.calculate_sleep_duration(mostUrgentItemTuple[1], mostUrgentItemTuple[0])
                     await asyncio.sleep(sleep_duration)
 

@@ -5,8 +5,9 @@ Extracts structured data from HTML-formatted activity entries.
 """
 
 import re
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
+from dataClasses import ActivityEntry
 
 
 def parse_price_and_currency(price_str: str) -> tuple[Optional[float], Optional[str]]:
@@ -97,15 +98,15 @@ def parse_activity_html(html: str) -> Dict:
     }
 
 
-def parse_activity_response(response: dict) -> list[dict]:
+def parse_activity_response(response: dict) -> List[ActivityEntry]:
     """
-    Parse full Steam activity response into list of structured entries.
+    Parse full Steam activity response into list of ActivityEntry models.
 
     Args:
         response: Full response from fetch_orders_activity
 
     Returns:
-        List of parsed activity entries with timestamp
+        List of ActivityEntry Pydantic models
     """
     if not response.get("success"):
         return []
@@ -115,8 +116,19 @@ def parse_activity_response(response: dict) -> list[dict]:
 
     for html_line in response.get("activity", []):
         parsed = parse_activity_html(html_line)
-        parsed["timestamp"] = datetime.fromtimestamp(timestamp) if timestamp else None
-        parsed_entries.append(parsed)
+
+        # Convert price from float to string for the model
+        price_str = str(parsed["price"]) if parsed["price"] is not None else None
+
+        # Create ActivityEntry model
+        entry = ActivityEntry(
+            price=price_str,
+            currency=parsed["currency"],
+            action=parsed["action"],
+            timestamp=datetime.fromtimestamp(timestamp) if timestamp else None,
+            raw_html=parsed["raw_html"]
+        )
+        parsed_entries.append(entry)
 
     return parsed_entries
 

@@ -1,11 +1,28 @@
 config.yaml: entry point
 dataClasses: defines the data classes for config and steam market data
-snoozerScheduler (LiveScheduler): takes the most urgent skin, executes it and sleeps till next execution
+snoozerScheduler: takes the most urgent skin, executes it and sleeps till next execution
 clockworkScheduler: once started, executes skins every hour
 rateLimiter: maintains a list of calls made in the last 60 seconds
 UTILS: because we need them in 2025 where the same numbers and symbols mean different thing to machines and humans. im held back with the technology of my time
 orchestrator: backend entry point - loads config, creates shared RateLimiter, starts all schedulers
-SQLinserts (DataWizard): routes data to SQLite/TimescaleDB, handles batch inserts
+SQLinserts: routes data to SQLite/TimescaleDB, handles batch inserts
+
+Config Field Handling:
+REQUIRED (will raise KeyError if missing):
+- market_hash_name: Item identifier
+- item_nameid: Required for histogram/activity APIs
+
+OPTIONAL (silent defaults):
+- appid: defaults to 730 (CS2)
+- currency: defaults to 1 (USD)
+- country: defaults to 'US'
+- language: defaults to 'english'
+
+Currency Handling:
+- Config: integer codes (1=USD, 3=EUR, 6=RUB, etc.)
+- Steam API: accepts integer codes
+- Storage: extracts symbols from response → ISO codes (USD, EUR, etc.)
+- Fallback: 'USD' if extraction fails (silent default)
 
 Shared RateLimiter:
 - Orchestrator creates ONE RateLimiter instance
