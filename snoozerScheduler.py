@@ -84,41 +84,29 @@ class snoozerScheduler:
         delta = datetime.now() - item['last_update']
         
         urgency = delta.total_seconds() / item['polling-interval-in-seconds']
-        print(urgency)
         return urgency
 
-    def find_most_urgent_item(self) -> tuple[dict, float]:
+    def calculate_min_sleep_duration(self) -> float:
         """
-        Find the item with the highest urgency score.
+        Calculate MINIMUM sleep time until ANY item becomes overdue.
 
-        Returns:
-            Tuple of (most_urgent_item, urgency_score)
-        """
-        urgencies = []
-        for item in self.live_items:
-            urgency = self.calculate_urgency(item)
-            urgencies.append((item, urgency))
-
-        # Find tuple with max urgency (second element)
-        mostUrgentItemTuple = max(urgencies, key=lambda x: x[1])
-
-        return mostUrgentItemTuple
-
-
-    def calculate_sleep_duration(self, max_urgency: float, max_urgency_item: dict) -> float:
-        """
-        Calculate how long to sleep until the next item becomes overdue.
-
-        Args:
-            max_urgency: The highest urgency score among all items
-            max_urgency_item: The item with the highest urgency
+        Checks all items and returns the shortest time until any item reaches urgency 1.0.
+        This ensures we wake up for the SOONEST item, not just the most urgent one.
 
         Returns:
             Sleep duration in seconds
         """
-        # Time until urgency reaches 1.0 = (1.0 - current_urgency) * polling rate
-        sleepTime = (1.0 - max_urgency) * max_urgency_item['polling-interval-in-seconds']
-        return sleepTime
+        min_sleep = float('inf')
+
+        for item in self.live_items:
+            urgency = self.calculate_urgency(item)
+            if urgency < 1.0:  # Only consider items that aren't already overdue
+                # Time until this item becomes urgent (urgency = 1.0)
+                time_until_urgent = (1.0 - urgency) * item['polling-interval-in-seconds']
+                min_sleep = min(min_sleep, time_until_urgent)
+
+        # If all items are overdue, don't sleep
+        return min_sleep if min_sleep != float('inf') else 0
 
 
     async def execute_item(self, item: dict) -> None:
@@ -217,8 +205,7 @@ class snoozerScheduler:
 
                 # If nothing was urgent, sleep until the next item becomes urgent
                 if not executed_any:
-                    mostUrgentItemTuple = self.find_most_urgent_item()
-                    sleep_duration = self.calculate_sleep_duration(mostUrgentItemTuple[1], mostUrgentItemTuple[0])
+                    sleep_duration = self.calculate_min_sleep_duration()
                     await asyncio.sleep(sleep_duration)
 
 

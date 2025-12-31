@@ -29,7 +29,7 @@ TRACKING_ITEMS:
     currency: 2
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 60
+    polling-interval-in-seconds: 30
     apiid: 'itemordershistogram' 
   
   - market_hash_name: "MP9 | Starlight Protector (Field-Tested)"
