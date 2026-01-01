@@ -1,6 +1,6 @@
 File Descriptions:
 
-config.yaml: The Manifest. Entry point for user-defined parameters, including API credentials, asset lists, and target polling frequencies.
+config.yaml: The Manifest. Entry point for user-defined parameters, asset lists, and target polling frequencies.
 
 dataClasses.py: The Schema. Houses the Pydantic models that enforce data integrity and provide type-safety across the entire pipeline.
 
