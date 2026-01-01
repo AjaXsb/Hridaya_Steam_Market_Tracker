@@ -10,7 +10,7 @@ LIMITS:
 TRACKING_ITEMS:
   - market_hash_name: "Revolution Case"
     appid: 730
-    currency: 2
+    currency: 1
     country: 'US'
     language: 'english'
     polling-interval-in-seconds: 8

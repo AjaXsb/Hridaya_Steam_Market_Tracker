@@ -12,7 +12,7 @@ Responsibilities:
 import asyncio
 import signal
 from typing import Optional
-from loadConfig import load_config_from_yaml
+from loadConfig_utility import load_config_from_yaml
 from RateLimiter import RateLimiter
 from snoozerScheduler import snoozerScheduler
 from clockworkScheduler import ClockworkScheduler
@@ -118,7 +118,7 @@ class Orchestrator:
             print(f"  ✓ Started HIGH frequency tracking on ({len(live_items)} items)")
 
         if history_items:
-            self.clockwork_scheduler = ClockworkScheduler(
+            self.clockworkScheduler = ClockworkScheduler(
                 items=history_items,
                 rate_limiter=self.rate_limiter
             )

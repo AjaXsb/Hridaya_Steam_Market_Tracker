@@ -10,7 +10,7 @@ from dataClasses import (
     OrdersActivityData,
     PriceHistoryData
 )
-from parseActivityHTML import parse_activity_response
+from parseActivityHTML_utility import parse_activity_response
 
 # Load environment variables from .env file
 load_dotenv()

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import List, Optional
 from steamAPIclient import SteamAPIClient
 from RateLimiter import RateLimiter
-from loadConfig import load_config_from_yaml
+from loadConfig_utility import load_config_from_yaml
 from SQLinserts import SQLinserts
 
 
