@@ -119,12 +119,15 @@ class SQLinserts:
             CREATE TABLE IF NOT EXISTS price_overview (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                appid INTEGER NOT NULL,
                 market_hash_name TEXT NOT NULL,
+                item_nameid INTEGER,
                 currency TEXT NOT NULL,
+                country TEXT NOT NULL,
+                language TEXT NOT NULL,
                 lowest_price REAL,
                 median_price REAL,
-                volume INTEGER,
-                success INTEGER NOT NULL
+                volume INTEGER
             )
         """)
 
@@ -133,13 +136,27 @@ class SQLinserts:
             ON price_overview(market_hash_name, timestamp DESC)
         """)
 
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_overview_timestamp
+            ON price_overview(timestamp DESC)
+        """)
+
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_overview_appid
+            ON price_overview(appid, market_hash_name, timestamp DESC)
+        """)
+
         # Orders Histogram - order book snapshots
         await self.sqlite_conn.execute("""
             CREATE TABLE IF NOT EXISTS orders_histogram (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                appid INTEGER NOT NULL,
                 market_hash_name TEXT NOT NULL,
+                item_nameid INTEGER NOT NULL,
                 currency TEXT NOT NULL,
+                country TEXT NOT NULL,
+                language TEXT NOT NULL,
                 buy_order_table TEXT,
                 sell_order_table TEXT,
                 buy_order_graph TEXT,
@@ -147,8 +164,7 @@ class SQLinserts:
                 buy_order_count INTEGER,
                 sell_order_count INTEGER,
                 highest_buy_order REAL,
-                lowest_sell_order REAL,
-                success INTEGER NOT NULL
+                lowest_sell_order REAL
             )
         """)
 
@@ -157,24 +173,37 @@ class SQLinserts:
             ON orders_histogram(market_hash_name, timestamp DESC)
         """)
 
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_histogram_timestamp
+            ON orders_histogram(timestamp DESC)
+        """)
+
         # Orders Activity - trade activity log
         await self.sqlite_conn.execute("""
             CREATE TABLE IF NOT EXISTS orders_activity (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                appid INTEGER NOT NULL,
                 market_hash_name TEXT NOT NULL,
+                item_nameid INTEGER NOT NULL,
                 currency TEXT NOT NULL,
+                country TEXT NOT NULL,
+                language TEXT NOT NULL,
                 activity_raw TEXT,
                 parsed_activities TEXT,
                 activity_count INTEGER,
-                steam_timestamp INTEGER NOT NULL,
-                success INTEGER NOT NULL
+                steam_timestamp INTEGER NOT NULL
             )
         """)
 
         await self.sqlite_conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_activity_item_time
             ON orders_activity(market_hash_name, timestamp DESC)
+        """)
+
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_activity_timestamp
+            ON orders_activity(timestamp DESC)
         """)
 
         await self.sqlite_conn.commit()
@@ -201,8 +230,12 @@ class SQLinserts:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
                     time TIMESTAMPTZ NOT NULL,
+                    appid INTEGER NOT NULL,
                     market_hash_name TEXT NOT NULL,
+                    item_nameid INTEGER,
                     currency TEXT NOT NULL,
+                    country TEXT NOT NULL,
+                    language TEXT NOT NULL,
                     price DOUBLE PRECISION NOT NULL,
                     volume INTEGER NOT NULL,
                     fetched_at TIMESTAMPTZ DEFAULT NOW(),
@@ -266,15 +299,19 @@ class SQLinserts:
 
         await self.sqlite_conn.execute("""
             INSERT INTO price_overview (
-                market_hash_name, currency, lowest_price, median_price, volume, success
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                appid, market_hash_name, item_nameid, currency, country, language,
+                lowest_price, median_price, volume
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            item_config.get('appid', 730),
             item_config['market_hash_name'],
+            item_config.get('item_nameid'),
             currency,
+            item_config.get('country', 'US'),
+            item_config.get('language', 'english'),
             lowest_price_float,
             median_price_float,
-            volume_int,
-            int(data.success)
+            volume_int
         ))
         await self.sqlite_conn.commit()
 
@@ -301,16 +338,19 @@ class SQLinserts:
 
         await self.sqlite_conn.execute("""
             INSERT INTO orders_histogram (
-                market_hash_name, currency,
+                appid, market_hash_name, item_nameid, currency, country, language,
                 buy_order_table, sell_order_table,
                 buy_order_graph, sell_order_graph,
                 buy_order_count, sell_order_count,
-                highest_buy_order, lowest_sell_order,
-                success
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                highest_buy_order, lowest_sell_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            item_config.get('appid', 730),
             item_config['market_hash_name'],
+            item_config['item_nameid'],
             currency,
+            item_config.get('country', 'US'),
+            item_config.get('language', 'english'),
             buy_orders_json,
             sell_orders_json,
             buy_graph_json,
@@ -318,8 +358,7 @@ class SQLinserts:
             buy_count,
             sell_count,
             highest_buy,
-            lowest_sell,
-            int(data.success)
+            lowest_sell
         ))
         await self.sqlite_conn.commit()
 
@@ -351,18 +390,21 @@ class SQLinserts:
 
         await self.sqlite_conn.execute("""
             INSERT INTO orders_activity (
-                market_hash_name, currency,
+                appid, market_hash_name, item_nameid, currency, country, language,
                 activity_raw, parsed_activities,
-                activity_count, steam_timestamp, success
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                activity_count, steam_timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            item_config.get('appid', 730),
             item_config['market_hash_name'],
+            item_config['item_nameid'],
             currency,
+            item_config.get('country', 'US'),
+            item_config.get('language', 'english'),
             activity_raw_json,
             parsed_json,
             activity_count,
-            data.timestamp,
-            int(data.success)
+            data.timestamp
         ))
         await self.sqlite_conn.commit()
 
@@ -405,8 +447,12 @@ class SQLinserts:
 
             records.append((
                 parsed_time,
+                item_config.get('appid', 730),
                 item_config['market_hash_name'],
+                item_config.get('item_nameid'),
                 currency,
+                item_config.get('country', 'US'),
+                item_config.get('language', 'english'),
                 float(price),
                 volume_int
             ))
@@ -422,10 +468,12 @@ class SQLinserts:
                     batch = records[i:i + BATCH_SIZE]
                     await conn.executemany("""
                         INSERT INTO price_history (
-                            time, market_hash_name, currency, price, volume
-                        ) VALUES ($1, $2, $3, $4, $5)
+                            time, appid, market_hash_name, item_nameid, currency, country, language, price, volume
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                         ON CONFLICT (market_hash_name, time) DO UPDATE
-                        SET price = EXCLUDED.price, volume = EXCLUDED.volume, currency = EXCLUDED.currency
+                        SET price = EXCLUDED.price, volume = EXCLUDED.volume, currency = EXCLUDED.currency,
+                            appid = EXCLUDED.appid, item_nameid = EXCLUDED.item_nameid,
+                            country = EXCLUDED.country, language = EXCLUDED.language
                     """, batch)
 
     async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
@@ -437,8 +485,12 @@ class SQLinserts:
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 time DATETIME NOT NULL,
+                appid INTEGER NOT NULL,
                 market_hash_name TEXT NOT NULL,
+                item_nameid INTEGER,
                 currency TEXT NOT NULL,
+                country TEXT NOT NULL,
+                language TEXT NOT NULL,
                 price REAL NOT NULL,
                 volume INTEGER NOT NULL,
                 fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -449,6 +501,11 @@ class SQLinserts:
         await self.sqlite_conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_history_item_time
             ON price_history(market_hash_name, time DESC)
+        """)
+
+        await self.sqlite_conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_history_timestamp
+            ON price_history(time DESC)
         """)
 
         # Extract currency from price_prefix or price_suffix
@@ -471,8 +528,12 @@ class SQLinserts:
 
             records.append((
                 parsed_time.strftime('%Y-%m-%d %H:%M:%S'),  # SQLite datetime format
+                item_config.get('appid', 730),
                 item_config['market_hash_name'],
+                item_config.get('item_nameid'),
                 currency,
+                item_config.get('country', 'US'),
+                item_config.get('language', 'english'),
                 float(price),
                 volume_int
             ))
@@ -486,10 +547,12 @@ class SQLinserts:
             batch = records[i:i + BATCH_SIZE]
             await self.sqlite_conn.executemany("""
                 INSERT INTO price_history (
-                    time, market_hash_name, currency, price, volume
-                ) VALUES (?, ?, ?, ?, ?)
+                    time, appid, market_hash_name, item_nameid, currency, country, language, price, volume
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(market_hash_name, time) DO UPDATE
-                SET price = excluded.price, volume = excluded.volume, currency = excluded.currency
+                SET price = excluded.price, volume = excluded.volume, currency = excluded.currency,
+                    appid = excluded.appid, item_nameid = excluded.item_nameid,
+                    country = excluded.country, language = excluded.language
             """, batch)
 
         await self.sqlite_conn.commit()
