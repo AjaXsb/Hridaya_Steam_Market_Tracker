@@ -1,10 +1,10 @@
 config.yaml: entry point
 dataClasses: defines the data classes for config and steam market data
-snoozerScheduler: takes the most urgent skin, executes it and sleeps till next execution
-clockworkScheduler: once started, executes skins every hour
-rateLimiter: maintains a list of calls made in the last 60 seconds
-UTILS: because we need them in 2025 where the same numbers and symbols mean different thing to machines and humans. im held back with the technology of my time
-orchestrator: backend entry point - loads config, creates shared RateLimiter, starts all schedulers
+snoozerScheduler: takes the most urgent item, executes it and sleeps till next execution
+clockworkScheduler: executes once, then hourly
+rateLimiter: maintains the required rate of api calls
+utility_files: because we need them in 2025 where the same numbers and symbols mean different thing to different languages and humans.
+orchestrator: backend entry point - loads config, creates a shared RateLimiter, starts all schedulers
 SQLinserts: routes data to SQLite/TimescaleDB, handles batch inserts
 
 Config Field Handling:
