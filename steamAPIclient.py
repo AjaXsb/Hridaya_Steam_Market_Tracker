@@ -53,7 +53,9 @@ class SteamAPIClient:
         self,
         appid: int,
         market_hash_name: str,
-        currency: int = 1
+        currency: int = 1,
+        country: str = "US",
+        language: str = "english"
     ) -> PriceOverviewData:
         """
         Fetch price overview for a specific item.
@@ -62,6 +64,8 @@ class SteamAPIClient:
             appid: Steam application ID (e.g., 730 for CS2)
             market_hash_name: URL-encoded market hash name of the item
             currency: Currency code (1=USD, 3=EUR, 6=RUB, etc.)
+            country: Country code (default "US")
+            language: Language (default "english")
 
         Returns:
             Parsed PriceOverviewData object
@@ -73,7 +77,9 @@ class SteamAPIClient:
         params = {
             "appid": appid,
             "market_hash_name": market_hash_name,
-            "currency": currency
+            "currency": currency,
+            "country": country,
+            "language": language
         }
 
         async with self.session.get(url, params=params) as response:
@@ -163,13 +169,23 @@ class SteamAPIClient:
 
             return data
 
-    async def fetch_price_history(self, appid: int, market_hash_name: str) -> PriceHistoryData:
+    async def fetch_price_history(
+        self,
+        appid: int,
+        market_hash_name: str,
+        currency: int = 1,
+        country: str = "US",
+        language: str = "english"
+    ) -> PriceHistoryData:
         """
         Fetch historical price data for a specific item.
 
         Args:
             appid: Steam application ID (e.g., 730 for CS2)
             market_hash_name: URL-encoded market hash name of the item
+            currency: Currency code (1=USD, 3=EUR, 6=RUB, etc.)
+            country: Country code (default "US")
+            language: Language (default "english")
 
         Returns:
             Parsed PriceHistoryData object
@@ -196,7 +212,10 @@ class SteamAPIClient:
         url = f"{self.BASE_URL}pricehistory"
         params = {
             "appid": appid,
-            "market_hash_name": market_hash_name
+            "market_hash_name": market_hash_name,
+            "currency": currency,
+            "country": country,
+            "language": language
         }
 
         headers = {

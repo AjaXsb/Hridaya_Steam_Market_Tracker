@@ -109,7 +109,10 @@ class ClockworkScheduler:
             try:
                 result = await self.steam_client.fetch_price_history(
                     appid=item['appid'],
-                    market_hash_name=item['market_hash_name']
+                    market_hash_name=item['market_hash_name'],
+                    currency=item.get('currency', 1),  # Default to USD
+                    country=item.get('country', 'US'),  # Default to US
+                    language=item.get('language', 'english')  # Default to english
                 )
 
                 # Store result to database

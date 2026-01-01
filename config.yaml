@@ -19,7 +19,7 @@ TRACKING_ITEMS:
   - market_hash_name: "AK-47 | Nightwish (Field-Tested)"
     appid: 730
     currency: 3
-    country: 'NL'
+    country: 'IN'
     language: 'english'
     polling-interval-in-seconds: 60
     apiid: 'priceoverview' 
@@ -27,7 +27,7 @@ TRACKING_ITEMS:
   - market_hash_name: "Dreams & Nightmares Case"
     appid: 730
     currency: 2
-    country: 'US'
+    country: 'IN'
     language: 'english'
     polling-interval-in-seconds: 30
     apiid: 'itemordershistogram' 
@@ -35,7 +35,7 @@ TRACKING_ITEMS:
   - market_hash_name: "MP9 | Starlight Protector (Field-Tested)"
     appid: 730
     currency: 2
-    country: 'US'
+    country: 'IN'
     language: 'english'
     polling-interval-in-seconds: 60
     apiid: 'itemordershistogram' 

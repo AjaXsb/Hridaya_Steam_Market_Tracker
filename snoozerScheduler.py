@@ -124,7 +124,9 @@ class snoozerScheduler:
                     result = await self.steam_client.fetch_price_overview(
                         appid=item.get('appid', 730),  # Default to CS2
                         market_hash_name=item['market_hash_name'],  # REQUIRED
-                        currency=item.get('currency', 1)  # Default to USD
+                        currency=item.get('currency', 1),  # Default to USD
+                        country=item.get('country', 'US'),  # Default to US
+                        language=item.get('language', 'english')  # Default to english
                     )
                 case 'itemordershistogram':
                     result = await self.steam_client.fetch_orders_histogram(
