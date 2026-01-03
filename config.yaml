@@ -22,7 +22,7 @@ TRACKING_ITEMS:
     country: 'IN'
     language: 'english'
     polling-interval-in-seconds: 60
-    apiid: 'priceoverview' 
+    apiid: 'pricehistory' 
   
   - market_hash_name: "Dreams & Nightmares Case"
     appid: 730

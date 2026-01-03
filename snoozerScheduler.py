@@ -46,12 +46,12 @@ class snoozerScheduler:
                 item['last_update'] = None
         else:
             self.config = load_config_from_yaml(config_path)
-            self.live_items = self._load_live_items()
+            self.live_items = self.load_live_items()
 
         self.steam_client: Optional[SteamAPIClient] = None  # Will be initialized in run()
         self.data_wizard: Optional[SQLinserts] = None  # Will be initialized in run()
 
-    def _load_live_items(self) -> List[dict]:
+    def load_live_items(self) -> List[dict]:
         """
         Load all items from config that are NOT pricehistory.
 
@@ -73,23 +73,19 @@ class snoozerScheduler:
 
         Urgency = (time since last update) / (target polling rate)
         
-        Returns 0.0 if item is suspended or in cooldown.
+        Returns 0.0 if item is in cooldown.
 
         Args:
             item: Item configuration with last_update and polling-interval-in-seconds
 
         Returns:
-            Urgency score (>= 1.0 means overdue, < 1.0 means current, 0.0 if suspended/cooling down)
+            Urgency score (>= 1.0 means overdue, < 1.0 means not yet, 0.0 if cooling down)
         """
-        # If suspended due to 4xx error, never urgent
-        if item.get('suspended'):
-            return 0.0
-        
         # If in backoff cooldown, urgency is 0 (never urgent)
         if item.get('skip_until') and datetime.now() < item['skip_until']:
             return 0.0
         
-        if item['last_update'] == None:
+        if item['last_update'] is None:
             return float('inf')
 
         delta = datetime.now() - item['last_update']
@@ -118,6 +114,7 @@ class snoozerScheduler:
                 # Time until cooldown ends
                 time_until_cooldown_ends = (item['skip_until'] - datetime.now()).total_seconds()
                 min_sleep = min(min_sleep, time_until_cooldown_ends)
+
             else:
                 # Normal urgency calculation
                 urgency = self.calculate_urgency(item)
@@ -129,7 +126,7 @@ class snoozerScheduler:
         # If all items are overdue, don't sleep
         return min_sleep if min_sleep != float('inf') else 0
 
-    def _apply_exponential_backoff(self, item: dict, error_code: int) -> None:
+    def apply_exponential_backoff(self, item: dict, error_code: int) -> None:
         """
         Apply exponential backoff for rate limit (429), server (5xx), or network errors.
         
@@ -161,27 +158,6 @@ class snoozerScheduler:
         print(f"  ⏸ {error_type} on {item['market_hash_name']}:{item['apiid']} - "
               f"cooling down {skip_seconds:.0f}s (attempt #{item['consecutive_backoffs']})")
 
-    def _suspend_item(self, item: dict, error_code: int, message: str) -> None:
-        """
-        Suspend an item due to client error (4xx).
-        
-        Client errors (400, 403, 404, etc.) indicate configuration issues
-        that won't fix themselves. The item is removed from circulation
-        until the config is fixed and the scheduler is restarted.
-        
-        Args:
-            item: Item configuration to suspend
-            error_code: HTTP status code (4xx)
-            message: Error message from the server
-        """
-        item['suspended'] = True
-        item['suspended_reason'] = f"HTTP {error_code}: {message}"
-        
-        print(f"  ⛔ SUSPENDED {item['market_hash_name']}:{item['apiid']}")
-        print(f"     Reason: HTTP {error_code} - {message}")
-        print(f"     Item will not be polled until config is fixed and scheduler restarted.")
-
-
     async def execute_item(self, item: dict) -> None:
         """
         Execute the API call for a specific item.
@@ -189,10 +165,6 @@ class snoozerScheduler:
         Args:
             item: Item configuration to execute
         """
-        # Check if item is suspended (4xx error)
-        if item.get('suspended'):
-            return  # Permanently skipped until config fix
-        
         # Check if item is in cooldown from previous backoff
         if item.get('skip_until') and datetime.now() < item['skip_until']:
             return  # Silently skip, still cooling down
@@ -247,33 +219,25 @@ class snoozerScheduler:
                 case 'itemordershistogram':
                     print(f"  ✓ {item['market_hash_name']}: {result.buy_order_count or 0} orders")
                 case 'itemordersactivity':
-                    from dataClasses import OrdersActivityData
-                    if isinstance(result, OrdersActivityData):
-                        activity_count = len(result.parsed_activities) if result.parsed_activities else 0
-                        print(f"  ✓ {item['market_hash_name']}: {activity_count} activities")
-
-                        # DEBUG: Dump activities for sanity check
-                        if result.parsed_activities:
-                            print(f"  📋 Activity Details:")
-                            for i, activity in enumerate(result.parsed_activities[:5], 1):  # Show first 5
-                                print(f"      {i}. {activity.action} - {activity.price} {activity.currency} @ {activity.timestamp}")
-                            if len(result.parsed_activities) > 5:
-                                print(f"      ... and {len(result.parsed_activities) - 5} more")
+                    activity_count = len(result.parsed_activities) if result.parsed_activities else 0
+                    print(f"  ✓ {item['market_hash_name']}: {activity_count} activities")
 
         except aiohttp.ClientResponseError as e:
-            if e.status == 429:
-                # Rate limited - exponential backoff
-                self._apply_exponential_backoff(item, e.status)
-            elif e.status >= 500:
-                # Server error - exponential backoff (transient)
-                self._apply_exponential_backoff(item, e.status)
+            if e.status == 429 or e.status >= 500:
+                # Rate limited or server error - exponential backoff
+                self.apply_exponential_backoff(item, e.status)
+            elif e.status in (401, 403):
+                # Authentication error - likely cookie issue
+                print(f"  ✗ HTTP {e.status}: {e.message} - check Steam cookies in .env")
             else:
-                # Client error (4xx) - suspend item until config fix
-                self._suspend_item(item, e.status, e.message)
+                # Client error (4xx) - just log, config validated at load time
+                print(f"  ✗ HTTP {e.status}: {e.message}")
+
         except aiohttp.ClientError as e:
             # Network error (timeout, DNS, connection refused) - treat as transient
             print(f"  ⚠ Network error on {item['market_hash_name']}:{item['apiid']} - {e}")
-            self._apply_exponential_backoff(item, 0)
+            self.apply_exponential_backoff(item, 0)
+            
         except Exception as e:
             # Parse errors, etc. - just log, will retry on next normal cycle
             print(f"  ✗ Error: {e}")
