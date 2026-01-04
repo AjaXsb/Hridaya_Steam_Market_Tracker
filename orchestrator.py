@@ -51,12 +51,63 @@ class Orchestrator:
         tracking_items = self.config['TRACKING_ITEMS']
 
         print(f"  I see you want to make: {rate_limit} requests per {window_seconds} seconds")
-        
 
-        # TODO: User will implement feasibility math here
-        # Check if the combination of schedulers + items can stay within rate limits
-        # Placeholder for now:
+        # Validate required fields exist before checking feasibility
+        self._validate_required_fields(tracking_items)
+
         self._validate_config_feasibility(rate_limit, window_seconds, tracking_items)
+
+    def _validate_required_fields(self, items: list):
+        """
+        Validate that each item has all required fields.
+        
+        Required fields:
+        - All items: market_hash_name, apiid, polling-interval-in-seconds, appid
+        - histogram/activity: item_nameid (additional)
+        
+        Args:
+            items: List of tracking items to validate
+        """
+        valid_apiids = {'priceoverview', 'itemordershistogram', 'itemordersactivity', 'pricehistory'}
+        
+        # Popular Steam app IDs for helpful error messages
+        popular_appids = {
+            730: "Counter-Strike 2 (CS2)",
+            570: "Dota 2",
+            440: "Team Fortress 2",
+            252490: "Rust",
+            753: "Steam (trading cards, backgrounds, emoticons)"
+        }
+        
+        for index, item in enumerate(items):
+            # Check universal required fields
+            required = ['market_hash_name', 'apiid', 'polling-interval-in-seconds', 'appid']
+            
+            for field in required:
+                if field not in item:
+                    print(f"\n❌ CONFIG ERROR: Item {index + 1} missing required field '{field}'")
+                    print(f"   Item: {item}")
+                    
+                    # Helpful hint for appid
+                    if field == 'appid':
+                        print(f"\n   Popular App IDs:")
+                        for appid, name in popular_appids.items():
+                            print(f"     {appid}: {name}")
+                    
+                    exit(1)
+            
+            # Validate apiid is recognized
+            if item['apiid'] not in valid_apiids:
+                print(f"\n❌ CONFIG ERROR: Item {index + 1} has invalid apiid '{item['apiid']}'")
+                print(f"   Valid options: {', '.join(valid_apiids)}")
+                exit(1)
+            
+            # Check endpoint-specific required fields
+            if item['apiid'] in ('itemordershistogram', 'itemordersactivity'):
+                if 'item_nameid' not in item:
+                    print(f"\n❌ CONFIG ERROR: Item {index + 1} missing 'item_nameid' (required for {item['apiid']})")
+                    print(f"   Item: {item.get('market_hash_name', 'unknown')}")
+                    exit(1)
 
     def _validate_config_feasibility(self, rate_limit: int, window_seconds: int, items: list):
         """
@@ -70,22 +121,22 @@ class Orchestrator:
             window_seconds: Time window in seconds
             items: List of tracking items with their configs
         """
-        totalReqs = 0
+        total_reqs = 0
 
         for item in items:
-            numberOfReqs = window_seconds // item['polling-interval-in-seconds']
-            totalReqs += numberOfReqs
+            reqs_per_window = window_seconds // item['polling-interval-in-seconds']
+            total_reqs += reqs_per_window
 
-        if totalReqs > rate_limit:
+        if total_reqs > rate_limit:
             print(f"\n❌ CONFIG ERROR: Infeasible configuration")
-            print(f"   Calculated: {totalReqs} requests per {window_seconds}s")
+            print(f"   Calculated: {total_reqs} requests per {window_seconds}s")
             print(f"   Limit: {rate_limit} requests per {window_seconds}s")
             print(f"   Adjust polling intervals or reduce tracked items")
             exit(1)
 
         # Success - config is feasible
-        utilization = (totalReqs / rate_limit) * 100
-        print(f"  ✓ Feasible: {totalReqs}/{rate_limit} req/{window_seconds}s ({utilization:.1f}% capacity)")
+        utilization = (total_reqs / rate_limit) * 100
+        print(f"  ✓ Feasible: {total_reqs}/{rate_limit} req/{window_seconds}s ({utilization:.1f}% capacity)")
 
         # Warn about startup burst
         if len(items) > rate_limit:
@@ -182,7 +233,7 @@ class Orchestrator:
         # Run all schedulers concurrently until shutdown
         try:
             # Wait for shutdown event or any task to fail
-            shutdown_task = asyncio.create_task(self.shutdown_event.wait())
+            shutdown_task = asyncio.create_task(self.shutdown_event.wait(), name="shutdown")
             done, pending = await asyncio.wait(
                 tasks + [shutdown_task],
                 return_when=asyncio.FIRST_COMPLETED
@@ -198,7 +249,7 @@ class Orchestrator:
 
             # Check if any scheduler task failed
             for task in done:
-                if task.get_name() != "Task-shutdown" and not task.cancelled():
+                if task.get_name() != "shutdown" and not task.cancelled():
                     exc = task.exception()
                     if exc:
                         print(f"Scheduler {task.get_name()} failed with error: {exc}")

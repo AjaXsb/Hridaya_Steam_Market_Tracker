@@ -38,26 +38,6 @@ class SteamAPIClient:
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
         )
-        
-        # Cache authentication cookies for price_history endpoint
-        self._cookies = {}
-        session_id = os.getenv("sessionid")
-        steam_login_secure = os.getenv("steamLoginSecure")
-        browser_id = os.getenv("browserid")
-        steam_country = os.getenv("steamCountry")
-        
-        if session_id:
-            self._cookies["sessionid"] = session_id
-        if steam_login_secure:
-            self._cookies["steamLoginSecure"] = steam_login_secure
-        if browser_id:
-            self._cookies["browserid"] = browser_id
-        if steam_country:
-            self._cookies["steamCountry"] = steam_country
-        
-        # Warn if cookies are missing (price_history requires authentication)
-        if not self._cookies:
-            print("  ⚠ No Steam cookies found in .env - price_history endpoint will fail")
 
     async def close(self):
         """Close the aiohttp session. Call this when done with the client."""
@@ -202,6 +182,9 @@ class SteamAPIClient:
         """
         Fetch historical price data for a specific item.
 
+        Cookies are read fresh on each call to support hot-swapping .env values
+        while the system is running.
+
         Args:
             appid: Steam application ID (e.g., 730 for CS2)
             market_hash_name: URL-encoded market hash name of the item
@@ -214,6 +197,25 @@ class SteamAPIClient:
         """
         # CRITICAL: Acquire rate limit token before making request
         await self.rate_limiter.acquire_token()
+
+        # Re-read .env to pick up any hot-swapped cookie values
+        load_dotenv(override=True)
+        
+        # Build cookies fresh each call (enables hot-swapping)
+        cookies = {}
+        session_id = os.getenv("sessionid")
+        steam_login_secure = os.getenv("steamLoginSecure")
+        browser_id = os.getenv("browserid")
+        steam_country = os.getenv("steamCountry")
+        
+        if session_id:
+            cookies["sessionid"] = session_id
+        if steam_login_secure:
+            cookies["steamLoginSecure"] = steam_login_secure
+        if browser_id:
+            cookies["browserid"] = browser_id
+        if steam_country:
+            cookies["steamCountry"] = steam_country
 
         url = f"{self.BASE_URL}pricehistory"
         params = {
@@ -229,7 +231,7 @@ class SteamAPIClient:
             'Referer': f'https://steamcommunity.com/market/listings/{appid}/{market_hash_name}'
         }
 
-        async with self.session.get(url, params=params, cookies=self._cookies, headers=headers) as response:
+        async with self.session.get(url, params=params, cookies=cookies, headers=headers) as response:
             response.raise_for_status()
             raw_response = await response.json()
             # Parse into Pydantic model - validation errors will bubble up to scheduler

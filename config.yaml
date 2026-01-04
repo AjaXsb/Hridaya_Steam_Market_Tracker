@@ -38,4 +38,4 @@ TRACKING_ITEMS:
     country: 'IN'
     language: 'english'
     polling-interval-in-seconds: 60
-    apiid: 'itemordershistogram' 
+    apiid: 'priceoverview' 

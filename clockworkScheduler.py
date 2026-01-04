@@ -114,8 +114,8 @@ class ClockworkScheduler:
         """
         Fetch price history for a single item with retry logic.
         
-        Retries transient errors (429, 5xx, network) with exponential backoff.
-        Backoff: 30s -> 60s -> 120s
+        Retries transient errors (429, 5xx, network) and auth errors (400, 401, 403)
+        with backoff. Auth errors are retried because cookies can be hot-swapped in .env.
         
         Args:
             item: Item configuration to fetch
@@ -136,7 +136,7 @@ class ClockworkScheduler:
                 # Store result to database
                 await self.data_wizard.store_data(result, item)
                 item['last_update'] = datetime.now()
-                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} points historical data points")
+                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} points")
                 return  # Success, exit retry loop
 
             except aiohttp.ClientResponseError as e:
@@ -149,10 +149,14 @@ class ClockworkScheduler:
                         await asyncio.sleep(delay)
                     else:
                         print(f"  ✗ {item['market_hash_name']}: Failed after {max_retries} retries ({e.status})")
-                elif e.status in (401, 403):
-                    # Auth error - no retry
-                    print(f"  ✗ {item['market_hash_name']}: HTTP {e.status} - check Steam cookies in .env")
-                    return
+                elif e.status in (400, 401, 403):
+                    # Auth/cookie error - retry with backoff (cookies can be hot-swapped)
+                    if attempt < max_retries:
+                        delay = backoff_seconds[attempt]
+                        print(f"  ⏸ {item['market_hash_name']}: HTTP {e.status} (cookie error?) - update .env, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(delay)
+                    else:
+                        print(f"  ✗ {item['market_hash_name']}: HTTP {e.status} after {max_retries} retries - check Steam cookies in .env")
                 else:
                     # Other 4xx - no retry
                     print(f"  ✗ {item['market_hash_name']}: HTTP {e.status}: {e.message}")
