@@ -6,6 +6,7 @@ since Steam only updates historical data once per hour.
 """
 
 import asyncio
+import aiohttp
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from steamAPIclient import SteamAPIClient
@@ -48,7 +49,7 @@ class ClockworkScheduler:
             self.history_items = self._load_history_items()
 
         self.steam_client: Optional[SteamAPIClient] = None  # Will be initialized in run()
-        self.SQLinserts: Optional[SQLinserts] = None  # Will be initialized in run()
+        self.data_wizard: Optional[SQLinserts] = None  # Will be initialized in run()
 
     def _load_history_items(self) -> List[dict]:
         """
@@ -102,28 +103,74 @@ class ClockworkScheduler:
         Execute pricehistory API calls for all configured items.
 
         This runs all history items in sequence, respecting the rate limiter.
+        Retries transient errors (429, 5xx, network) with exponential backoff.
         """
         print(f"[{datetime.now()}] Executing hourly price history updates")
 
         for item in self.history_items:
+            await self._fetch_item_with_retry(item)
+
+    async def _fetch_item_with_retry(self, item: dict, max_retries: int = 4) -> None:
+        """
+        Fetch price history for a single item with retry logic.
+        
+        Retries transient errors (429, 5xx, network) with exponential backoff.
+        Backoff: 30s -> 60s -> 120s
+        
+        Args:
+            item: Item configuration to fetch
+            max_retries: Maximum retry attempts for transient errors
+        """
+        backoff_seconds = [30, 60, 120, 240]  # Backoff delays for each retry
+        
+        for attempt in range(max_retries + 1):  # +1 for initial attempt
             try:
                 result = await self.steam_client.fetch_price_history(
                     appid=item['appid'],
                     market_hash_name=item['market_hash_name'],
-                    currency=item.get('currency', 1),  # Default to USD
-                    country=item.get('country', 'US'),  # Default to US
-                    language=item.get('language', 'english')  # Default to english
+                    currency=item.get('currency', 1),
+                    country=item.get('country', 'US'),
+                    language=item.get('language', 'english')
                 )
 
                 # Store result to database
                 await self.data_wizard.store_data(result, item)
-
                 item['last_update'] = datetime.now()
+                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} points historical data points")
+                return  # Success, exit retry loop
 
-                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} points")
-
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429 or e.status >= 500:
+                    # Transient error - retry with backoff
+                    if attempt < max_retries:
+                        delay = backoff_seconds[attempt]
+                        error_type = "Rate limited" if e.status == 429 else f"Server error {e.status}"
+                        print(f"  ⏸ {item['market_hash_name']}: {error_type} - retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(delay)
+                    else:
+                        print(f"  ✗ {item['market_hash_name']}: Failed after {max_retries} retries ({e.status})")
+                elif e.status in (401, 403):
+                    # Auth error - no retry
+                    print(f"  ✗ {item['market_hash_name']}: HTTP {e.status} - check Steam cookies in .env")
+                    return
+                else:
+                    # Other 4xx - no retry
+                    print(f"  ✗ {item['market_hash_name']}: HTTP {e.status}: {e.message}")
+                    return
+            
+            except aiohttp.ClientError as e:
+                # Network error - retry with backoff
+                if attempt < max_retries:
+                    delay = backoff_seconds[attempt]
+                    print(f"  ⏸ {item['market_hash_name']}: Network error - retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    print(f"  ✗ {item['market_hash_name']}: Network error after {max_retries} retries - {e}")
+            
             except Exception as e:
+                # Unexpected error - no retry
                 print(f"  ✗ {item['market_hash_name']}: Error - {e}")
+                return
 
     async def run_initial_fetch(self) -> None:
         """
