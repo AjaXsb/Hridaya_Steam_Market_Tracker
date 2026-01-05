@@ -425,13 +425,27 @@ class SQLinserts:
             await self._store_price_history_sqlite(data, item_config)
 
     async def _store_price_history_timescale(self, data: PriceHistoryData, item_config: dict):
-        """Insert price history points into TimescaleDB hypertable using batch inserts."""
+        """
+        Insert price history points into TimescaleDB hypertable.
+
+        Only inserts NEW points (after the most recent timestamp we already have).
+        Initial run inserts all points; subsequent runs insert only the delta.
+        """
+        market_hash_name = item_config['market_hash_name']
+
+        # Query the most recent timestamp we have for this item
+        async with self.timescale_pool.acquire() as conn:
+            last_timestamp = await conn.fetchval("""
+                SELECT MAX(time) FROM price_history WHERE market_hash_name = $1
+            """, market_hash_name)
+
         # Extract currency from price_prefix or price_suffix
         currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or 'USD'
 
-        # Parse all price points upfront (fail fast on bad data)
+        # Steam returns data in ascending order (oldest → newest)
+        # Iterate in reverse to find new points at the end, stop when we hit existing data
         records = []
-        for price_point in data.prices:
+        for price_point in reversed(data.prices):
             # price_point is [date_string, price_float, volume_string]
             date_string, price, volume = price_point
 
@@ -439,6 +453,10 @@ class SQLinserts:
             parsed_time = self._parse_steam_datetime(date_string)
             if not parsed_time:
                 continue  # Skip invalid dates
+
+            # Stop when we reach data we already have
+            if last_timestamp and parsed_time <= last_timestamp.replace(tzinfo=None):
+                break
 
             # Parse volume to integer
             volume_int = self._parse_volume(volume)
@@ -448,7 +466,7 @@ class SQLinserts:
             records.append((
                 parsed_time,
                 item_config['appid'],
-                item_config['market_hash_name'],
+                market_hash_name,
                 item_config.get('item_nameid'),
                 currency,
                 item_config.get('country', 'US'),
@@ -458,7 +476,11 @@ class SQLinserts:
             ))
 
         if not records:
-            return  # Nothing to insert
+            print(f"  ✓ {market_hash_name}: up to date")
+            return
+
+        # Reverse to restore chronological order for insert
+        records.reverse()
 
         # Batch insert with chunking to avoid memory issues
         BATCH_SIZE = 100
@@ -470,15 +492,21 @@ class SQLinserts:
                         INSERT INTO price_history (
                             time, appid, market_hash_name, item_nameid, currency, country, language, price, volume
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        ON CONFLICT (market_hash_name, time) DO UPDATE
-                        SET price = EXCLUDED.price, volume = EXCLUDED.volume, currency = EXCLUDED.currency,
-                            appid = EXCLUDED.appid, item_nameid = EXCLUDED.item_nameid,
-                            country = EXCLUDED.country, language = EXCLUDED.language
+                        ON CONFLICT (market_hash_name, time) DO NOTHING
                     """, batch)
 
+        print(f"  ✓ {market_hash_name}: {len(records)} new points")
+
     async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
-        """Fallback: Store price history in SQLite if TimescaleDB not available using batch inserts."""
+        """
+        Fallback: Store price history in SQLite if TimescaleDB not available.
+
+        Only inserts NEW points (after the most recent timestamp we already have).
+        Initial run inserts all points; subsequent runs insert only the delta.
+        """
         assert self.sqlite_conn is not None, "SQLite connection not initialized"
+
+        market_hash_name = item_config['market_hash_name']
 
         # Create table if not exists
         await self.sqlite_conn.execute("""
@@ -508,18 +536,35 @@ class SQLinserts:
             ON price_history(time DESC)
         """)
 
+        # Query the most recent timestamp we have for this item
+        async with self.sqlite_conn.execute("""
+            SELECT MAX(time) FROM price_history WHERE market_hash_name = ?
+        """, (market_hash_name,)) as cursor:
+            row = await cursor.fetchone()
+            last_timestamp_str = row[0] if row else None
+
+        # Parse last_timestamp from SQLite string format
+        last_timestamp = None
+        if last_timestamp_str:
+            last_timestamp = datetime.strptime(last_timestamp_str, '%Y-%m-%d %H:%M:%S')
+
         # Extract currency from price_prefix or price_suffix
         currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or 'USD'
 
-        # Parse all price points upfront
+        # Steam returns data in ascending order (oldest → newest)
+        # Iterate in reverse to find new points at the end, stop when we hit existing data
         records = []
-        for price_point in data.prices:
+        for price_point in reversed(data.prices):
             date_string, price, volume = price_point
 
             # Parse Steam's datetime format to proper timestamp
             parsed_time = self._parse_steam_datetime(date_string)
             if not parsed_time:
                 continue  # Skip invalid dates
+
+            # Stop when we reach data we already have
+            if last_timestamp and parsed_time <= last_timestamp:
+                break
 
             # Parse volume to integer
             volume_int = self._parse_volume(volume)
@@ -529,7 +574,7 @@ class SQLinserts:
             records.append((
                 parsed_time.strftime('%Y-%m-%d %H:%M:%S'),  # SQLite datetime format
                 item_config['appid'],
-                item_config['market_hash_name'],
+                market_hash_name,
                 item_config.get('item_nameid'),
                 currency,
                 item_config.get('country', 'US'),
@@ -539,7 +584,11 @@ class SQLinserts:
             ))
 
         if not records:
-            return  # Nothing to insert
+            print(f"  ✓ {market_hash_name}: up to date")
+            return
+
+        # Reverse to restore chronological order for insert
+        records.reverse()
 
         # Batch insert with chunking
         BATCH_SIZE = 50  # SQLite performs best with smaller batches than PostgreSQL
@@ -549,13 +598,12 @@ class SQLinserts:
                 INSERT INTO price_history (
                     time, appid, market_hash_name, item_nameid, currency, country, language, price, volume
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(market_hash_name, time) DO UPDATE
-                SET price = excluded.price, volume = excluded.volume, currency = excluded.currency,
-                    appid = excluded.appid, item_nameid = excluded.item_nameid,
-                    country = excluded.country, language = excluded.language
+                ON CONFLICT(market_hash_name, time) DO NOTHING
             """, batch)
 
         await self.sqlite_conn.commit()
+
+        print(f"  ✓ {market_hash_name}: {len(records)} new points")
 
     # ========================================================================
     # Utility Methods - Parse Steam's formatted strings

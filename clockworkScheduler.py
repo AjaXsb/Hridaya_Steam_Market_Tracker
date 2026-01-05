@@ -1,8 +1,8 @@
 """
 Clockwork Scheduler - Fixed-time scheduling for historical price data.
 
-This scheduler runs pricehistory API calls at :10 past every UTC hour,
-since Steam only updates historical data once per hour.
+This scheduler runs pricehistory API calls at :30 past every UTC hour,
+since Steam only updates historical data once per hour (with some lag).
 """
 
 import asyncio
@@ -15,12 +15,12 @@ from loadConfig_utility import load_config_from_yaml
 from SQLinserts import SQLinserts
 
 
-class ClockworkScheduler:                                                                                   
+class ClockworkScheduler:
     """
     Executes pricehistory API calls on a fixed hourly schedule.
 
-    Runs at 10 minutes past every UTC hour (e.g., 00:10, 01:10, 02:10, etc.)
-    since Steam's price history data only updates once per hour.
+    Runs at 30 minutes past every UTC hour (e.g., 00:30, 01:30, 02:30, etc.)
+    since Steam's price history data updates hourly with ~20-30 min lag.
     """
 
     def __init__(
@@ -68,19 +68,19 @@ class ClockworkScheduler:
 
     def get_next_execution_time(self) -> datetime:
         """
-        Calculate the next execution time (:10 past the next hour).
+        Calculate the next execution time (:30 past the next hour).
 
         Returns:
-            Datetime of next execution (next hour at :10 UTC)
+            Datetime of next execution (next hour at :30 UTC)
         """
         # Get current UTC time
         now = datetime.now(timezone.utc)
 
-        # Start with :10 of current hour
-        next_run = now.replace(minute=10, second=0, microsecond=0)
+        # Start with :30 of current hour
+        next_run = now.replace(minute=30, second=0, microsecond=0)
 
-        # If we're past :10, move to next hour
-        if now.minute >= 10:
+        # If we're past :30, move to next hour
+        if now.minute >= 30:
             next_run = next_run + timedelta(hours=1)
 
         return next_run
@@ -133,10 +133,9 @@ class ClockworkScheduler:
                     language=item.get('language', 'english')
                 )
 
-                # Store result to database
+                # Store result to database (prints its own status)
                 await self.data_wizard.store_data(result, item)
                 item['last_update'] = datetime.now()
-                print(f"  ✓ {item['market_hash_name']}: {len(result.prices)} points")
                 return  # Success, exit retry loop
 
             except aiohttp.ClientResponseError as e:
@@ -191,7 +190,7 @@ class ClockworkScheduler:
 
         Algorithm:
         1. Run pricehistory immediately on startup
-        2. Calculate next :10 past the hour
+        2. Calculate next :30 past the hour
         3. Sleep until that time
         4. Execute all pricehistory items
         5. Repeat from step 2
