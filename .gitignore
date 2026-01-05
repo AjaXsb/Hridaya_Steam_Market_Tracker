@@ -22,8 +22,9 @@ env/
 .DS_Store
 Thumbs.db
 
-# Cache
-.serena/cs2_item_ids.json
+# AI/Dev Tools
+.claude/
+.serena/
 
 # Database Files
 *.db
