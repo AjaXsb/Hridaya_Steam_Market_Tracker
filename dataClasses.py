@@ -1,91 +1,13 @@
 """
-Pydantic models for Steam Market API data contracts.
+Pydantic models for Steam Market API response data contracts.
 
-Contains system models for scheduling and API requests, as well as
-response models matching Steam's Market API endpoints.
+Contains response models matching Steam's Market API endpoints.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
-
-
-# ============================================================================
-# Configuration Models (for YAML parsing)
-# ============================================================================
-
-
-class ItemConfig(BaseModel):
-    """
-    Configuration for a single market item from YAML.
-
-    Attributes:
-        market_hash_name: Steam market hash name for the item
-        item_nameid: Numeric Steam item name ID (required for histogram)
-        appid: Steam application ID (e.g., 730 for CS2)
-        enabled: Whether this item is active for tracking
-        price_overview_interval: Update interval in seconds for price overview (None = disabled)
-        histogram_interval: Update interval in seconds for order histogram (None = disabled)
-        activity_interval: Update interval in seconds for order activity (None = disabled)
-        history_interval: Update interval in seconds for price history (None = disabled)
-    """
-
-    market_hash_name: str
-    item_nameid: int
-    appid: int = 730
-    enabled: bool = True
-
-    # Live Data Stream (FCFS Scheduling)
-    T_live: float = 5.0  # Target latency in minutes for Price Overview/Activity
-    last_live_update: datetime = Field(default=datetime.min)
-
-    # History Data Stream (Fixed Clock Schedule)
-    # T_history is removed, replaced by the fixed hourly clock.
-    last_history_update: datetime = Field(default=datetime.min)
-
-class SchedulerConfig(BaseModel):
-    """
-    Root configuration model for the scheduler.
-
-    Attributes:
-        items: List of item configurations to track
-    """
-
-    items: list[ItemConfig]
-
-
-# ============================================================================
-# Scheduler Runtime Models
-# ============================================================================
-
-
-class ScheduledTask(BaseModel):
-    """
-    Represents a single executable task (item + endpoint combination).
-
-    This is the runtime representation of a scheduled task. One ItemConfig
-    can generate multiple ScheduledTask objects (one per enabled endpoint).
-
-    Attributes:
-        market_hash_name: Steam market hash name for the item
-        item_nameid: Numeric Steam item name ID
-        appid: Steam application ID
-        endpoint: API endpoint to call ("price_overview", "histogram", "activity", "history")
-        interval_seconds: Update interval in seconds
-        next_update: Timestamp when this task should execute next
-        last_update: Timestamp of last successful execution
-        enabled: Whether this task is active
-    """
-
-    market_hash_name: str
-    item_nameid: int
-    appid: int
-    apiid: str
-    interval_seconds: int
-    next_update: datetime
-    last_update: datetime | None = None
-    enabled: bool = True
 
 
 # ============================================================================

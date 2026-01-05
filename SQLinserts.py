@@ -303,7 +303,7 @@ class SQLinserts:
                 lowest_price, median_price, volume
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            item_config.get('appid', 730),
+            item_config['appid'],
             item_config['market_hash_name'],
             item_config.get('item_nameid'),
             currency,
@@ -345,7 +345,7 @@ class SQLinserts:
                 highest_buy_order, lowest_sell_order
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            item_config.get('appid', 730),
+            item_config['appid'],
             item_config['market_hash_name'],
             item_config['item_nameid'],
             currency,
@@ -395,7 +395,7 @@ class SQLinserts:
                 activity_count, steam_timestamp
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            item_config.get('appid', 730),
+            item_config['appid'],
             item_config['market_hash_name'],
             item_config['item_nameid'],
             currency,
@@ -447,7 +447,7 @@ class SQLinserts:
 
             records.append((
                 parsed_time,
-                item_config.get('appid', 730),
+                item_config['appid'],
                 item_config['market_hash_name'],
                 item_config.get('item_nameid'),
                 currency,
@@ -528,7 +528,7 @@ class SQLinserts:
 
             records.append((
                 parsed_time.strftime('%Y-%m-%d %H:%M:%S'),  # SQLite datetime format
-                item_config.get('appid', 730),
+                item_config['appid'],
                 item_config['market_hash_name'],
                 item_config.get('item_nameid'),
                 currency,
