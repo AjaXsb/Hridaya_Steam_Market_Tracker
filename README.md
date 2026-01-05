@@ -23,6 +23,7 @@ pip install -r requirements.txt
 
 # 2. Configure your assets in config.yaml
 Add your items, appIDs, and polling intervals
+Don't forget to create a .env file with the sessionid and steamLoginSecure cookie values if you are going to call the price history endpoint.
 
 # 3. Launch the system
 python orchestrator.py
