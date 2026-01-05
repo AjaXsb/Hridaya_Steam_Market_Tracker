@@ -25,6 +25,7 @@ Thumbs.db
 # AI/Dev Tools
 .claude/
 .serena/
+CLAUDE.md
 
 # Database Files
 *.db
