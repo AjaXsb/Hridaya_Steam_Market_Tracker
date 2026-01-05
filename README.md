@@ -1,4 +1,4 @@
-File Descriptions:
+# File Descriptions:
 
 config.yaml: The Manifest. Entry point to track items, api endpoints, and target polling frequencies.
 
@@ -26,3 +26,13 @@ Add your items, appIDs, and polling intervals
 
 # 3. Launch the system
 python orchestrator.py
+
+# A note to everyone:
+
+Fork it, clone it, try it, modify it, create pull requests if you find improvements and lets collaborate on the frontend, AI integration or a thousand others things that can be done on this datamine of gold.
+
+Currently, only cs2 items are supported as hridaya only has access to cs2 item name ids. check loadConfig_utility file for implementation.
+
+Special thanks to users [Revadike](https://github.com/Revadike/InternalSteamWebAPI) and [somespecialone](https://github.com/somespecialone/steam-item-name-ids) for their work on the steam api and steam item name ids.
+
+GLHF!

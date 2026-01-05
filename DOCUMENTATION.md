@@ -51,7 +51,6 @@ LIMITS:
 TRACKING_ITEMS:
   - market_hash_name: "AK-47 | Redline (Field-Tested)"
     appid: 730
-    item_nameid: 176189450
     currency: 1
     country: 'US'
     language: 'english'
@@ -318,3 +317,5 @@ ORDER BY volatility_pct DESC;
 3. **Time zones:** All timestamps are stored in UTC.
 
 4. **Performance:** Tables are indexed on `(market_hash_name, timestamp DESC)` for fast lookups.
+
+5. **Disclaimer:** This md file is AI generated. If something doesn't make sense, trust yourself. 
