@@ -7,23 +7,33 @@ Hridaya is a professional-grade asynchronous data engine engineered to overcome 
 ## Key Technical Achievements
 
 * **Strategic Ingestion:** Intelligent scheduling that balances real-time order-book snapshots with massive historical data fetches.
+
 * **Resource Sovereignty:** A global orchestrator managing a shared sliding-window rate-limit budget across concurrent asynchronous tasks.
+
 * **Financial Grade Integrity:** Automated data sanitization translating regional currency symbols and non-standard timestamps into structured numeric "Tape."
 
 ## System Architecture
 
 ### **Cerebro (The Brain)**
+
 **`cerebro.py`**: The primary entry point. It acts as the central consciousness of the engine, initializing shared resources, injecting the `RateLimiter` into schedulers, and managing the global execution lifecycle.
 
 ### **The Internal Machinery (`/src`)**
+
 * **`rateLimiter.py`**: **The Governor.** A thread-safe, sliding-window algorithm that prevents API blacklisting by enforcing a strict global request budget defined in the configuration.
+
 * **`snoozerScheduler.py`**: **The Real-Time Engine.** A priority-based scheduler calculating "urgency scores" for high-frequency assets to manage sub-minute execution loops.
+
 * **`clockworkScheduler.py`**: **The Batch Engine.** A time-synchronized scheduler designed for high-volume, lower-frequency tasks like hourly price history snapshots.
+
 * **`dataClasses.py`**: **The Schema.** Houses Pydantic models that enforce data integrity and provide type-safety across the entire pipeline.
+
 * **`SQLinserts.py`**: **The Data Wizard.** A routing layer handling ACID-compliant transactions and batch-inserting data into the storage layer.
 
 ### **The Localization Layer (`/utility`)**
+
 * **`loadConfig_utility.py`**: Handles manifest ingestion and environment setup.
+
 * **`parseActivityHTML_utility.py`**: Specialized parsers handling international currency symbols and regional decimal formatting.
 
 ## How to Run
