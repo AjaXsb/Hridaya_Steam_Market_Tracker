@@ -317,5 +317,3 @@ ORDER BY volatility_pct DESC;
 3. **Time zones:** All timestamps are stored in UTC.
 
 4. **Performance:** Tables are indexed on `(market_hash_name, timestamp DESC)` for fast lookups.
-
-**Disclaimer:** This md file is AI generated. If something doesn't make sense, trust yourself. 
