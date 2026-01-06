@@ -33,7 +33,9 @@ CLAUDE.md
 *.db-wal
 *.sqlite
 *.sqlite3
-market_data.db
+data/*.db
+!data/.gitkeep
 
 # Logs
 *.log
+miscellaneousNotes.txt

@@ -3,14 +3,14 @@ import json
 import aiohttp
 from typing import Optional
 from dotenv import load_dotenv
-from RateLimiter import RateLimiter
-from dataClasses import (
+from src.RateLimiter import RateLimiter
+from src.dataClasses import (
     PriceOverviewData,
     OrdersHistogramData,
     OrdersActivityData,
     PriceHistoryData
 )
-from parseActivityHTML_utility import parse_activity_response
+from utility.parseActivityHTML_utility import parse_activity_response
 
 # Load environment variables from .env file
 load_dotenv()

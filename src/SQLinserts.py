@@ -3,7 +3,7 @@ import aiosqlite
 import asyncpg
 from datetime import datetime
 from typing import Optional
-from dataClasses import (
+from src.dataClasses import (
     PriceOverviewData,
     OrdersHistogramData,
     OrdersActivityData,
@@ -21,7 +21,7 @@ class SQLinserts:
 
     def __init__(
         self,
-        sqlite_path: str = "market_data.db",
+        sqlite_path: str = "data/market_data.db",
         timescale_dsn: Optional[str] = None,
         timescale_pool_min: int = 10,
         timescale_pool_max: int = 100
@@ -98,6 +98,10 @@ class SQLinserts:
     async def _initialize_sqlite(self):
         """Create SQLite connection and tables for operational data."""
         self.sqlite_conn = await aiosqlite.connect(self.sqlite_path)
+
+        # Set busy timeout FIRST - this makes SQLite wait for locks instead of failing immediately
+        # Critical for concurrent access from multiple schedulers
+        await self.sqlite_conn.execute("PRAGMA busy_timeout=30000")  # Wait up to 30 seconds for locks
 
         # Performance optimizations for SQLite
         await self.sqlite_conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for concurrency
@@ -760,7 +764,7 @@ class SQLinserts:
 async def example_usage():
     """Example of how schedulers will use DataWizard."""
     async with SQLinserts(
-        sqlite_path="market_data.db",
+        sqlite_path="data/market_data.db",
         timescale_dsn="postgresql://user:pass@localhost/cs2market"  # Optional
     ) as wizard:
         # After fetching data from API:

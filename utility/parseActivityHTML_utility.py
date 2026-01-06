@@ -7,7 +7,7 @@ Extracts structured data from HTML-formatted activity entries.
 import re
 from typing import Optional, Dict, List
 from datetime import datetime
-from dataClasses import ActivityEntry
+from src.dataClasses import ActivityEntry
 
 
 def parse_price_and_currency(price_str: str) -> tuple[Optional[float], Optional[str]]:

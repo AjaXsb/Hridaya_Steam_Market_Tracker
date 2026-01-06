@@ -12,10 +12,10 @@ Responsibilities:
 import asyncio
 import signal
 from typing import Optional
-from loadConfig_utility import load_config_from_yaml
-from RateLimiter import RateLimiter
-from snoozerScheduler import snoozerScheduler
-from clockworkScheduler import ClockworkScheduler
+from utility.loadConfig_utility import load_config_from_yaml
+from src.RateLimiter import RateLimiter
+from src.snoozerScheduler import snoozerScheduler
+from src.clockworkScheduler import ClockworkScheduler
 
 
 class Orchestrator:
