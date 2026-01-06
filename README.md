@@ -6,11 +6,11 @@ Hridaya is an asynchronous data engine built to overcome the unique challenges o
 
 Key Technical Achievements:
 
-    Strategic Ingestion: Intelligent scheduling that balances immediate order-book snapshots with massive historical data fetches.
+* Strategic Ingestion: Intelligent scheduling that balances immediate order-book snapshots with massive historical data fetches.
 
-    Resource Sovereignty: A global orchestrator that manages a single shared rate-limit budget across multiple concurrent schedulers.
+* Resource Sovereignty: A global orchestrator that manages a single shared rate-limit budget across multiple concurrent schedulers.
 
-    Financial Grade Integrity: Automated data sanitization that translates regional currency symbols and non-standard timestamps into clean, numeric financial "Tape."
+* Financial Grade Integrity: Automated data sanitization that translates regional currency symbols and non-standard timestamps into clean, numeric financial "Tape."
 
 ## File Descriptions:
 
@@ -33,14 +33,14 @@ SQLinserts.py: The Data Wizard. A routing layer that handles ACID-compliant tran
 ## How to Run:
 
 # 1. Install dependencies
-pip install -r requirements.txt
+`pip install -r requirements.txt`
 
 # 2. Configure your assets in config.yaml
 Add your items, appIDs, and polling intervals
 Don't forget to create a .env file with the sessionid and steamLoginSecure cookie values if you are going to call the price history endpoint.
 
 # 3. Launch the system
-python orchestrator.py
+`python orchestrator.py`
 
 ### A note to everyone:
 
@@ -48,6 +48,6 @@ Fork it, clone it, try it, modify it, create pull requests if you find improveme
 
 Currently, only cs2 items are supported as hridaya only has access to cs2 item name ids. check loadConfig_utility file for implementation.
 
-Special thanks to users [Revadike](https://github.com/Revadike/InternalSteamWebAPI) and [somespecialone](https://github.com/somespecialone/steam-item-name-ids) for their work on the steam api and steam item name ids.
+Special thanks to [Revadike](https://github.com/Revadike/InternalSteamWebAPI) and [somespecialone](https://github.com/somespecialone/steam-item-name-ids) for their work on the steam api and steam item name ids.
 
 GLHF!
