@@ -1,4 +1,18 @@
-# File Descriptions:
+# Hridaya (हृदय)
+
+The Heart of Market Ingestion
+
+Hridaya is an asynchronous data engine built to overcome the unique challenges of the Steam Community Market. Unlike standard scrapers, Hridaya acts as a central nervous system for market data, strategically timing every pulse of the exchange to maintain a 1:1 ratio between the width of the market and the depth of its historical records.
+
+Key Technical Achievements:
+
+    Strategic Ingestion: Intelligent scheduling that balances immediate order-book snapshots with massive historical data fetches.
+
+    Resource Sovereignty: A global orchestrator that manages a single shared rate-limit budget across multiple concurrent schedulers.
+
+    Financial Grade Integrity: Automated data sanitization that translates regional currency symbols and non-standard timestamps into clean, numeric financial "Tape."
+
+## File Descriptions:
 
 config.yaml: The Manifest. Entry point to track items, api endpoints, and target polling frequencies.
 
@@ -16,7 +30,7 @@ orchestrator.py: The Central Nervous System. The primary backend entry point; it
 
 SQLinserts.py: The Data Wizard. A routing layer that handles ACID-compliant transactions, batch-inserting parsed data into a hybrid SQLite/TimescaleDB storage system.
 
-# How to Run:
+## How to Run:
 
 # 1. Install dependencies
 pip install -r requirements.txt
@@ -28,7 +42,7 @@ Don't forget to create a .env file with the sessionid and steamLoginSecure cooki
 # 3. Launch the system
 python orchestrator.py
 
-# A note to everyone:
+### A note to everyone:
 
 Fork it, clone it, try it, modify it, create pull requests if you find improvements and lets collaborate on the frontend, AI integration or a thousand others things that can be done on this datamine of gold.
 
