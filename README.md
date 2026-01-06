@@ -32,17 +32,17 @@ Key Technical Achievements:
 
 ## How to Run:
 
-# 1. Install dependencies
+### 1. Install dependencies
 `pip install -r requirements.txt`
 
-# 2. Configure your assets in config.yaml
+### 2. Configure your assets in config.yaml
 Add your items, appIDs, and polling intervals
 Don't forget to create a .env file with the sessionid and steamLoginSecure cookie values if you are going to call the price history endpoint.
 
-# 3. Launch the system
+### 3. Launch the system
 `python orchestrator.py`
 
-### A note to everyone:
+## A note to everyone:
 
 Fork it, clone it, try it, modify it, create pull requests if you find improvements and lets collaborate on the frontend, AI integration or a thousand others things that can be done on this datamine of gold.
 
