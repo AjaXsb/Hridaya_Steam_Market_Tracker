@@ -53,11 +53,11 @@ class Orchestrator:
         print(f"  I see you have a rate limit: {rate_limit} requests per {window_seconds} seconds")
 
         # Validate required fields exist before checking feasibility
-        self._validate_required_fields(tracking_items)
+        self.validate_required_fields(tracking_items)
 
-        self._validate_config_feasibility(rate_limit, window_seconds, tracking_items)
+        self.validate_config_feasibility(rate_limit, window_seconds, tracking_items)
 
-    def _validate_required_fields(self, items: list):
+    def validate_required_fields(self, items: list):
         """
         Validate that each item has all required fields.
         
@@ -109,7 +109,7 @@ class Orchestrator:
                     print(f"   Item: {item.get('market_hash_name', 'unknown')}")
                     exit(1)
 
-    def _validate_config_feasibility(self, rate_limit: int, window_seconds: int, items: list):
+    def validate_config_feasibility(self, rate_limit: int, window_seconds: int, items: list):
         """
         Validate that config is feasible given rate limits.
 
