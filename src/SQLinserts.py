@@ -499,7 +499,7 @@ class SQLinserts:
                         ON CONFLICT (market_hash_name, time) DO NOTHING
                     """, batch)
 
-        print(f"  ✓ {market_hash_name}: {len(records)} new points")
+        print(f"  ✓ {market_hash_name}: {len(records)} new historical price points")
 
     async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
         """

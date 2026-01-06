@@ -255,10 +255,6 @@ class snoozerScheduler:
         async with SteamAPIClient(rate_limiter=self.rate_limiter) as client, SQLinserts() as wizard:
             self.steam_client = client
             self.data_wizard = wizard
-            print(f"Live Scheduler started with {len(self.live_items)} items")
-            print(f"Database: SQLite at market_data.db")
-            if self.rate_limiter is not None:
-                print(f"Using shared RateLimiter (orchestrated mode)")
 
             while True:
                 # Execute ALL items that are overdue (urgency >= 1.0)

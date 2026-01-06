@@ -198,10 +198,6 @@ class ClockworkScheduler:
         async with SteamAPIClient(rate_limiter=self.rate_limiter) as client, SQLinserts() as wizard:
             self.steam_client = client
             self.data_wizard = wizard
-            print(f"Clockwork Scheduler started with {len(self.history_items)} items")
-            print(f"Database: SQLite at market_data.db")
-            if self.rate_limiter is not None:
-                print(f"Using shared RateLimiter (orchestrated mode)")
 
             # Run once immediately
             await self.run_initial_fetch()
@@ -209,7 +205,7 @@ class ClockworkScheduler:
             while True:
                 next_execution = self.get_next_execution_time()
                 sleep_seconds = self.calculate_sleep_duration(next_execution)
-                print(f"  Sleeping until {next_execution.strftime('%H:%M:%S')} UTC ({sleep_seconds:.0f} seconds)")
+                print(f"  Historical collector sleeping until {next_execution.strftime('%H:%M:%S')} UTC ({sleep_seconds:.0f} seconds)")
                 await asyncio.sleep(sleep_seconds)
                 await self.execute_history_items()
 

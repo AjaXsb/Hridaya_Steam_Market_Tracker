@@ -16,7 +16,7 @@ TRACKING_ITEMS:
     polling-interval-in-seconds: 8
     apiid: 'itemordersactivity'
 
-  - market_hash_name: "AK-47 | Redline (Field-Tested)"
+  - market_hash_name: "AWP | Neo-Noir (Factory New)"
     appid: 730
     currency: 3
     country: 'IN'

@@ -50,7 +50,7 @@ class Orchestrator:
         window_seconds = self.config['LIMITS']['WINDOW_SECONDS']
         tracking_items = self.config['TRACKING_ITEMS']
 
-        print(f"  I see you want to make: {rate_limit} requests per {window_seconds} seconds")
+        print(f"  I see you have a rate limit: {rate_limit} requests per {window_seconds} seconds")
 
         # Validate required fields exist before checking feasibility
         self._validate_required_fields(tracking_items)
@@ -136,7 +136,7 @@ class Orchestrator:
 
         # Success - config is feasible
         utilization = (total_reqs / rate_limit) * 100
-        print(f"  ✓ Feasible: {total_reqs}/{rate_limit} req/{window_seconds}s ({utilization:.1f}% capacity)")
+        print(f"  ✓ Config feasible: {total_reqs} req/{window_seconds}s ({utilization:.1f}% capacity)")
 
         # Warn about startup burst
         if len(items) > rate_limit:
@@ -148,7 +148,8 @@ class Orchestrator:
 
         # Create single shared rate limiter (CRITICAL for API compliance)
         self.rate_limiter = RateLimiter()
-        print("  ✓ Timekeeper has joined the server")
+        print("  ✓ Shared RateLimiter created")
+        print("  ✓ Database: SQLite at market_data.db")
 
         # Filter items by type: live items (not pricehistory) vs history items
         live_items = []
