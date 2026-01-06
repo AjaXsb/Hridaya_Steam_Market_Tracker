@@ -12,7 +12,7 @@ def fetch_cs2_item_name_ids() -> Dict[str, int]:
     Returns:
         Dictionary mapping market_hash_name to item_nameid
     """
-    cache_file = Path(".serena/cs2_item_ids.json")
+    cache_file = Path("cs2_item_ids.json")
 
     # Use cached version if it exists
     if cache_file.exists():
