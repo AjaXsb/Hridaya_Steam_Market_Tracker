@@ -18,10 +18,7 @@ load_dotenv()
 
 class SteamAPIClient:
     """
-    Async client for Steam Market API with built-in rate limiting.
-
-    Enforces 14 requests per 60-second window to safely stay within
-    Steam's 15 requests/60s rate limit.
+    Async client for Steam Market API with custom rate limiting.
     """
 
     BASE_URL = "https://steamcommunity.com/market/"
