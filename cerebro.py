@@ -147,9 +147,11 @@ class Orchestrator:
         print("\n")
 
         # Create single shared rate limiter (CRITICAL for API compliance)
-        self.rate_limiter = RateLimiter()
-        print("  ✓ Shared RateLimiter created")
-        print("  ✓ Database: SQLite at market_data.db")
+        rate_limit = self.config['LIMITS']['REQUESTS']
+        window_seconds = self.config['LIMITS']['WINDOW_SECONDS']
+        self.rate_limiter = RateLimiter(max_requests=rate_limit, window_seconds=window_seconds)
+        print(f"  ✓ Shared RateLimiter created ({rate_limit} req/{window_seconds}s)")
+        print("  ✓ Database: SQLite at data/market_data.db")
 
         # Filter items by type: live items (not pricehistory) vs history items
         live_items = []
