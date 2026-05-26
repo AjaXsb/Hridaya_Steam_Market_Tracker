@@ -44,12 +44,32 @@ Hridaya is a professional-grade asynchronous data engine engineered to overcome 
     ```
 
 2.  **Configure assets in `config.yaml`**
-    Add your items, appIDs, and polling intervals. Create a `.env` file with `sessionid` and `steamLoginSecure` cookies for price history access.
+    Add your items, appIDs, polling intervals, and an `api_id` per item. The `api_id` selects which Steam endpoint to hit:
 
-3.  **Launch the system**
+    | `api_id` | Data returned | Cookies required |
+    |----------|---------------|------------------|
+    | `priceoverview` | Lowest/median price + 24h volume | No |
+    | `itemordershistogram` | Full buy/sell order book | No |
+    | `itemordersactivity` | Recent trade activity feed | No |
+    | `pricehistory` | Historical hourly price/volume | **Yes** |
+
+    For `pricehistory`, create a `.env` file with `sessionid` and `steamLoginSecure` cookies (copy from your browser dev tools while logged into Steam). The other three endpoints need no auth.
+
+3.  **Update the item manifest (item name IDs)**
+    `itemordershistogram` and `itemordersactivity` require a numeric `item_nameid` per item. These are fetched automatically and cached to `data/cs2_item_ids.json` on first run (see `loadConfig_utility.py`). To refresh the manifest from upstream, delete that file — it will be re-fetched on the next run. Items whose name ID can't be resolved are skipped.
+
+4.  **Launch the system**
     ```bash
     python cerebro.py
     ```
+
+5.  **(Optional) Bulk-collect full price history**
+    To backfill historical price data for **every** item in `data/cs2_item_ids.json` (~26k items, several hours at 15 req/60s), run the standalone collector:
+    ```bash
+    python collect_price_history.py
+    python collect_price_history.py --skip 150   # resume from item 151
+    ```
+    This requires Steam cookies (it uses the `pricehistory` endpoint) and runs independently of `cerebro.py`.
 
 ## Collaboration & Contribution
 
@@ -57,6 +77,6 @@ Fork it, clone it, try it, modify it, create pull requests if you find improveme
 
 Currently, only cs2 items are supported as hridaya only has access to cs2 item name ids. check loadConfig_utility file for implementation.
 
-Special thanks to [Revadike](https://github.com/Revadike/InternalSteamWebAPI) and [somespecialone](https://github.com/somespecialone/steam-item-name-ids) for their foundational work on the Steam Web API and item name IDs.
+Special thanks to [Revadike](https://github.com/Revadike/InternalSteamWebAPI) and [somespecialone](https://github.com/somespecialone/steam-market-ids) for their foundational work on the Steam Web API and item name IDs.
 
 **GLHF!**

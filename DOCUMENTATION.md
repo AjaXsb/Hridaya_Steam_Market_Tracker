@@ -14,7 +14,7 @@ All items are configured in `config.yaml` under `TRACKING_ITEMS`.
 |-----------|------|-------------|
 | `market_hash_name` | string | Exact Steam market name (e.g., `"AK-47 \| Redline (Field-Tested)"`) |
 | `appid` | integer | Steam application ID (see table below) |
-| `apiid` | string | API endpoint to use (see API Endpoints section) |
+| `api_id` | string | API endpoint to use (see API Endpoints section) |
 | `polling-interval-in-seconds` | integer | How often to fetch data (minimum recommended: 8s) |
 
 ### Required Parameters (Endpoint-Specific)
@@ -55,16 +55,16 @@ TRACKING_ITEMS:
     country: 'US'
     language: 'english'
     polling-interval-in-seconds: 30
-    apiid: 'itemordershistogram'
+    api_id: 'itemordershistogram'
 ```
 
 ---
 
 ## API Endpoints
 
-Four endpoints are supported. Use these exact strings for the `apiid` field:
+Four endpoints are supported. Use these exact strings for the `api_id` field:
 
-| apiid | Description | Auth Required | Frequency |
+| api_id | Description | Auth Required | Frequency |
 |-------|-------------|---------------|-----------|
 | `priceoverview` | Current lowest price, median price, and 24h volume | No | Real-time (seconds) |
 | `itemordershistogram` | Full order book (buy/sell orders at each price level) | No | Real-time (seconds) |

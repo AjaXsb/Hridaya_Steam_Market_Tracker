@@ -60,7 +60,7 @@ class snoozerScheduler:
         """
         live_items = []
         for item in self.config['TRACKING_ITEMS']:
-            if item['apiid'] != 'pricehistory':
+            if item['api_id'] != 'pricehistory':
                 # Initialize tracking fields
                 item['last_update'] = None
                 live_items.append(item)
@@ -155,7 +155,7 @@ class snoozerScheduler:
         else:
             error_type = f"server error {error_code}"
         
-        print(f"  ⏸ {error_type} on {item['market_hash_name']}:{item['apiid']} - "
+        print(f"  ⏸ {error_type} on {item['market_hash_name']}:{item['api_id']} - "
               f"cooling down {skip_seconds:.0f}s (attempt #{item['consecutive_backoffs']})")
 
     async def execute_item(self, item: dict) -> None:
@@ -171,7 +171,7 @@ class snoozerScheduler:
         
         try:
             # match case for MAXIMUM EFFICIENCY
-            match item['apiid']:
+            match item['api_id']:
                 
                 case 'priceoverview':
                     result = await self.steam_client.fetch_price_overview(
@@ -200,7 +200,7 @@ class snoozerScheduler:
                     # Activity HTML is already parsed by the client
                     # Success message will be printed after DB storage
                 case _:
-                    raise ValueError(f"Unknown API endpoint: {item['apiid']}")
+                    raise ValueError(f"Unknown API endpoint: {item['api_id']}")
 
             # Store result to database
             await self.data_wizard.store_data(result, item)
@@ -213,7 +213,7 @@ class snoozerScheduler:
             item['last_update'] = datetime.now()
 
             # Print success message with most relevant data point
-            match item['apiid']:
+            match item['api_id']:
                 case 'priceoverview':
                     print(f"  ✓ {item['market_hash_name']}: {result.lowest_price or 'N/A'}")
                 case 'itemordershistogram':
@@ -235,7 +235,7 @@ class snoozerScheduler:
 
         except aiohttp.ClientError as e:
             # Network error (timeout, DNS, connection refused) - treat as transient
-            print(f"  ⚠ Network error on {item['market_hash_name']}:{item['apiid']} - {e}")
+            print(f"  ⚠ Network error on {item['market_hash_name']}:{item['api_id']} - {e}")
             self.apply_exponential_backoff(item, 0)
             
         except Exception as e:

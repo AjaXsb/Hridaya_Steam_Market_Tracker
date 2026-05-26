@@ -60,7 +60,7 @@ class ClockworkScheduler:
         """
         history_items = []
         for item in self.config['TRACKING_ITEMS']:
-            if item['apiid'] == 'pricehistory':
+            if item['api_id'] == 'pricehistory':
                 item['last_update'] = None
                 history_items.append(item)
 

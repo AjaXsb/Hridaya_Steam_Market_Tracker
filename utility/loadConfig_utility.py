@@ -20,7 +20,7 @@ def fetch_cs2_item_name_ids() -> Dict[str, int]:
             return json.load(f)
 
     # Fetch from GitHub
-    url = "https://raw.githubusercontent.com/somespecialone/steam-item-name-ids/master/data/cs2.json"
+    url = "https://raw.githubusercontent.com/somespecialone/steam-market-ids/main/data/CS2/item_names.json"
 
     try:
         with urllib.request.urlopen(url) as response:
@@ -56,15 +56,15 @@ def populate_item_name_ids(config: dict) -> dict:
 
     for item in config.get('TRACKING_ITEMS', []):
         # Only populate if item_nameid is missing and we need it (histogram or activity)
-        apiid = item.get('apiid')
-        if 'item_nameid' not in item and apiid in ['itemordershistogram', 'itemordersactivity']:
+        api_id = item.get('api_id')
+        if 'item_nameid' not in item and api_id in ['itemordershistogram', 'itemordersactivity']:
             market_hash_name = item.get('market_hash_name')
 
             if market_hash_name in item_id_map:
                 item['item_nameid'] = item_id_map[market_hash_name]
             else:
                 # CRITICAL: Cannot make API calls without item_nameid - discard this item
-                print(f"  ✗ DISCARDING '{market_hash_name}' - item_nameid not found (required for {apiid})")
+                print(f"  ✗ DISCARDING '{market_hash_name}' - item_nameid not found (required for {api_id})")
                 items_to_remove.append(item)
 
     # Remove items that couldn't get their item_nameid
@@ -116,4 +116,4 @@ if __name__ == "__main__":
 
     print("\nTracking Items:")
     for item in config['TRACKING_ITEMS']:
-        print(f"  - {item['market_hash_name']} ({item['apiid']})") 
+        print(f"  - {item['market_hash_name']} ({item['api_id']})") 

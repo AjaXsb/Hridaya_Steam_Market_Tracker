@@ -62,13 +62,13 @@ class Orchestrator:
         Validate that each item has all required fields.
         
         Required fields:
-        - All items: market_hash_name, apiid, polling-interval-in-seconds, appid
+        - All items: market_hash_name, api_id, polling-interval-in-seconds, appid
         - histogram/activity: item_nameid (additional)
         
         Args:
             items: List of tracking items to validate
         """
-        valid_apiids = {'priceoverview', 'itemordershistogram', 'itemordersactivity', 'pricehistory'}
+        valid_api_ids = {'priceoverview', 'itemordershistogram', 'itemordersactivity', 'pricehistory'}
         
         # Popular Steam app IDs for helpful error messages
         popular_appids = {
@@ -81,7 +81,7 @@ class Orchestrator:
         
         for index, item in enumerate(items):
             # Check universal required fields
-            required = ['market_hash_name', 'apiid', 'polling-interval-in-seconds', 'appid']
+            required = ['market_hash_name', 'api_id', 'polling-interval-in-seconds', 'appid']
             
             for field in required:
                 if field not in item:
@@ -96,16 +96,16 @@ class Orchestrator:
                     
                     exit(1)
             
-            # Validate apiid is recognized
-            if item['apiid'] not in valid_apiids:
-                print(f"\n❌ CONFIG ERROR: Item {index + 1} has invalid apiid '{item['apiid']}'")
-                print(f"   Valid options: {', '.join(valid_apiids)}")
+            # Validate api_id is recognized
+            if item['api_id'] not in valid_api_ids:
+                print(f"\n❌ CONFIG ERROR: Item {index + 1} has invalid api_id '{item['api_id']}'")
+                print(f"   Valid options: {', '.join(valid_api_ids)}")
                 exit(1)
             
             # Check endpoint-specific required fields
-            if item['apiid'] in ('itemordershistogram', 'itemordersactivity'):
+            if item['api_id'] in ('itemordershistogram', 'itemordersactivity'):
                 if 'item_nameid' not in item:
-                    print(f"\n❌ CONFIG ERROR: Item {index + 1} missing 'item_nameid' (required for {item['apiid']})")
+                    print(f"\n❌ CONFIG ERROR: Item {index + 1} missing 'item_nameid' (required for {item['api_id']})")
                     print(f"   Item: {item.get('market_hash_name', 'unknown')}")
                     exit(1)
 
@@ -158,7 +158,7 @@ class Orchestrator:
         history_items = []
 
         for item in self.config['TRACKING_ITEMS']:
-            if item['apiid'] == 'pricehistory':
+            if item['api_id'] == 'pricehistory':
                 history_items.append(item)
             else:
                 live_items.append(item)
