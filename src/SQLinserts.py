@@ -70,24 +70,29 @@ class SQLinserts:
         self,
         data: PriceOverviewData | OrdersHistogramData | OrdersActivityData | PriceHistoryData,
         item_config: dict
-    ):
+    ) -> Optional[str]:
         """
         Route data to appropriate database based on type.
 
         Args:
             data: Pydantic data object from API client
             item_config: Item configuration dict with market_hash_name, appid, etc.
+
+        Returns:
+            The ISO currency code derived from Steam's response and stored on the
+            row(s) (e.g. "USD", "INR"). Callers use this to align ingest defaults
+            with the wallet's actual currency. None if it couldn't be determined.
         """
         # Match-case for MAXIMUM EFFICIENCY
         match data:
             case PriceOverviewData():
-                await self._store_price_overview(data, item_config)
+                return await self._store_price_overview(data, item_config)
             case OrdersHistogramData():
-                await self._store_histogram(data, item_config)
+                return await self._store_histogram(data, item_config)
             case OrdersActivityData():
-                await self._store_activity(data, item_config)
+                return await self._store_activity(data, item_config)
             case PriceHistoryData():
-                await self._store_price_history(data, item_config)
+                return await self._store_price_history(data, item_config)
             case _:
                 raise ValueError(f"Unknown data type: {type(data)}")
 
@@ -318,6 +323,7 @@ class SQLinserts:
             volume_int
         ))
         await self.sqlite_conn.commit()
+        return currency
 
     async def _store_histogram(self, data: OrdersHistogramData, item_config: dict):
         """Store order book histogram snapshot to SQLite."""
@@ -365,6 +371,7 @@ class SQLinserts:
             lowest_sell
         ))
         await self.sqlite_conn.commit()
+        return currency
 
     async def _store_activity(self, data: OrdersActivityData, item_config: dict):
         """Store trade activity snapshot to SQLite."""
@@ -411,6 +418,7 @@ class SQLinserts:
             data.timestamp
         ))
         await self.sqlite_conn.commit()
+        return currency
 
     # ========================================================================
     # TimescaleDB Storage Methods
@@ -424,9 +432,9 @@ class SQLinserts:
         with UPSERT to avoid duplicates.
         """
         if self.timescale_pool:
-            await self._store_price_history_timescale(data, item_config)
+            return await self._store_price_history_timescale(data, item_config)
         else:
-            await self._store_price_history_sqlite(data, item_config)
+            return await self._store_price_history_sqlite(data, item_config)
 
     async def _store_price_history_timescale(self, data: PriceHistoryData, item_config: dict):
         """
@@ -481,7 +489,7 @@ class SQLinserts:
 
         if not records:
             print(f"  ✓ {market_hash_name}: up to date")
-            return
+            return currency
 
         # Reverse to restore chronological order for insert
         records.reverse()
@@ -500,6 +508,7 @@ class SQLinserts:
                     """, batch)
 
         print(f"  ✓ {market_hash_name}: {len(records)} new historical price points")
+        return currency
 
     async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
         """
@@ -589,7 +598,7 @@ class SQLinserts:
 
         if not records:
             print(f"  ✓ {market_hash_name}: up to date")
-            return
+            return currency
 
         # Reverse to restore chronological order for insert
         records.reverse()
@@ -608,6 +617,7 @@ class SQLinserts:
         await self.sqlite_conn.commit()
 
         print(f"  ✓ {market_hash_name}: {len(records)} new points")
+        return currency
 
     # ========================================================================
     # Utility Methods - Parse Steam's formatted strings
@@ -629,7 +639,7 @@ class SQLinserts:
         try:
             # Remove currency symbols and whitespace
             cleaned = price_str.strip()
-            for symbol in ['$', '€', '£', '¥', '₽', 'pуб.', 'R$', 'CDN$', 'A$', 'HK$', 'S$', '₩', '₴', 'CHF', 'kr', 'zł', 'R', '฿']:
+            for symbol in ['$', '€', '£', '¥', '₹', '₽', 'pуб.', 'R$', 'CDN$', 'A$', 'HK$', 'S$', '₩', '₴', 'CHF', 'kr', 'zł', 'R', '฿']:
                 cleaned = cleaned.replace(symbol, '')
 
             cleaned = cleaned.strip()
@@ -695,6 +705,7 @@ class SQLinserts:
             '€': 'EUR',
             '£': 'GBP',
             '¥': 'JPY',
+            '₹': 'INR',
             '₽': 'RUB',
             'pуб.': 'RUB',
             'R$': 'BRL',

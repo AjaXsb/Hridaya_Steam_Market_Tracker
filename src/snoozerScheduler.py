@@ -15,6 +15,17 @@ from utility.loadConfig_utility import load_config_from_yaml
 from src.SQLinserts import SQLinserts
 
 
+# ISO currency code -> (Steam currency id, default country) used to re-align
+# ingest request defaults when the wallet returns a currency we didn't request.
+# Steam currency ids: USD=1, GBP=2, EUR=3, INR=24.
+ISO_CURRENCY_DEFAULTS = {
+    'USD': (1, 'US'),
+    'GBP': (2, 'GB'),
+    'EUR': (3, 'DE'),
+    'INR': (24, 'IN'),
+}
+
+
 class snoozerScheduler:
     """
     Schedules live API calls based on urgency (how overdue each item is).
@@ -202,8 +213,22 @@ class snoozerScheduler:
                 case _:
                     raise ValueError(f"Unknown API endpoint: {item['api_id']}")
 
-            # Store result to database
-            await self.data_wizard.store_data(result, item)
+            # Store result to database. The returned ISO currency is what Steam
+            # actually tagged the row with (derived from the response symbol).
+            stored_currency = await self.data_wizard.store_data(result, item)
+
+            # Currency-flip: the wallet decides the returned currency regardless of
+            # what we requested. If it differs from this item's request default,
+            # re-align the default so subsequent calls ask for the wallet currency.
+            # Row tagging is already correct via store_data; this only fixes requests.
+            if stored_currency in ISO_CURRENCY_DEFAULTS:
+                steam_code, country = ISO_CURRENCY_DEFAULTS[stored_currency]
+                if item.get('currency') != steam_code:
+                    print(f"  ⟳ {item['market_hash_name']}: wallet currency is "
+                          f"{stored_currency} — flipping ingest default "
+                          f"{item.get('currency')}→{steam_code} ({country})")
+                    item['currency'] = steam_code
+                    item['country'] = country
 
             # SUCCESS: Reset backoff tracking
             item['consecutive_backoffs'] = 0

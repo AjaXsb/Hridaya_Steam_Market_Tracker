@@ -21,6 +21,11 @@ from src.RateLimiter import RateLimiter
 from src.steamAPIclient import SteamAPIClient
 from src.SQLinserts import SQLinserts
 
+# Canonical currency we *request* from Steam. The pricehistory endpoint ignores
+# this and returns the logged-in wallet's currency anyway; the real currency is
+# derived from the response and tagged on each row by SQLinserts. USD for now.
+CANONICAL_CURRENCY = 1  # USD
+
 
 async def collect_price_history(skip: int = 0):
     """Fetch and store price history for all items in cs2_item_ids.json."""
@@ -58,11 +63,12 @@ async def collect_price_history(skip: int = 0):
             # Skip items if resuming
             if index <= skip:
                 continue
-            # Build item config for storage
+            # Build item config for storage. Note: currency is NOT set here — the
+            # real currency is derived from Steam's response and tagged per row by
+            # SQLinserts, so hardcoding it would mislabel non-USD wallet data.
             item_config = {
                 "market_hash_name": market_hash_name,
                 "appid": 730,  # CS2
-                "currency": 1,  # USD
                 "country": "US",
                 "language": "english",
                 "item_nameid": item_nameid
@@ -73,7 +79,7 @@ async def collect_price_history(skip: int = 0):
                 data = await client.fetch_price_history(
                     appid=730,
                     market_hash_name=market_hash_name,
-                    currency=1,
+                    currency=CANONICAL_CURRENCY,
                     country="US",
                     language="english"
                 )
