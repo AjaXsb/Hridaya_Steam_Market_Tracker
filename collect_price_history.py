@@ -16,6 +16,7 @@ Note: This script manages its own RateLimiter instance (separate from cerebro.py
 import argparse
 import asyncio
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from src.RateLimiter import RateLimiter
 from src.steamAPIclient import SteamAPIClient
@@ -27,8 +28,20 @@ from src.SQLinserts import SQLinserts
 CANONICAL_CURRENCY = 1  # USD
 
 
-async def collect_price_history(skip: int = 0):
-    """Fetch and store price history for all items in cs2_item_ids.json."""
+async def collect_price_history(skip: int = 0, refresh: bool = False, fresh_days: float = 1.0):
+    """Fetch and store price history for all items in cs2_item_ids.json.
+
+    Skip logic (DB is the source of truth, survives crashes):
+      - Item with NO rows           -> fetch (backfill).
+      - Item whose newest point is
+        older than fresh_days        -> fetch (top up; per-point delta dedup only
+                                        inserts the new tail, so it's cheap).
+      - Item fresh within fresh_days -> skip (no API call).
+
+    This makes an interrupted run resume where it left off AND keeps stale
+    (months-old) items updating instead of being skipped forever. Pass
+    refresh=True to re-fetch everything regardless of freshness.
+    """
 
     # Load items from JSON
     items_path = Path("data/cs2_item_ids.json")
@@ -52,16 +65,37 @@ async def collect_price_history(skip: int = 0):
     # Track progress
     successful = 0
     failed = 0
+    skipped = 0
     failed_items = []
 
     async with SteamAPIClient(rate_limiter=rate_limiter) as client, SQLinserts() as db:
         print(f"Database: SQLite at data/market_data.db")
+
+        # Auto-resume: skip items whose newest point is still fresh (no API call).
+        # Stale items (older than fresh_days) are re-fetched to top up. --refresh
+        # bypasses the check entirely and re-fetches everything.
+        last_timestamps = {}
+        fresh_cutoff = datetime.now() - timedelta(days=fresh_days)
+        if not refresh:
+            last_timestamps = await db.fetch_price_history_last_timestamps()
+            fresh_count = sum(1 for t in last_timestamps.values() if t and t >= fresh_cutoff)
+            if last_timestamps:
+                print(f"{len(last_timestamps)} items in DB, {fresh_count} fresh "
+                      f"(<{fresh_days}d) — those will be skipped, stale ones re-fetched")
+
         print("=" * 60)
         print("Starting collection...\n")
 
         for index, (market_hash_name, item_nameid) in enumerate(items.items(), start=1):
             # Skip items if resuming
             if index <= skip:
+                continue
+
+            # Auto-resume: skip only items whose newest point is still fresh.
+            # Missing (never fetched) or stale items fall through and get fetched.
+            last_time = last_timestamps.get(market_hash_name)
+            if last_time and last_time >= fresh_cutoff:
+                skipped += 1
                 continue
             # Build item config for storage. Note: currency is NOT set here — the
             # real currency is derived from Steam's response and tagged per row by
@@ -88,7 +122,10 @@ async def collect_price_history(skip: int = 0):
                 await db.store_data(data, item_config)
 
                 successful += 1
-                print(f"[{index}/{total_items}] ✓ {market_hash_name}")
+                # Item now has a today-dated point -> fresh -> auto-skipped on a
+                # re-run. This [index/total] is the resume checkpoint: on a crash,
+                # plain re-run skips everything up to here automatically.
+                print(f"[{index}/{total_items}] ✓ {market_hash_name} (fresh)")
 
             except Exception as e:
                 failed += 1
@@ -99,6 +136,7 @@ async def collect_price_history(skip: int = 0):
     print("\n" + "=" * 60)
     print("Collection complete!")
     print(f"  Successful: {successful}")
+    print(f"  Skipped (already ingested): {skipped}")
     print(f"  Failed: {failed}")
 
     if failed_items:
@@ -117,10 +155,21 @@ if __name__ == "__main__":
         default=0,
         help="Number of items to skip (resume from item N+1)"
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-fetch all items regardless of freshness (ignores the staleness window)"
+    )
+    parser.add_argument(
+        "--fresh-days",
+        type=float,
+        default=1.0,
+        help="Skip an item only if its newest stored point is within this many days (default: 1)"
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(collect_price_history(skip=args.skip))
+        asyncio.run(collect_price_history(skip=args.skip, refresh=args.refresh, fresh_days=args.fresh_days))
     except KeyboardInterrupt:
         print("\n\nCollection interrupted by user")
     except Exception as e:
