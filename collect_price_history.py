@@ -16,8 +16,10 @@ Note: This script manages its own RateLimiter instance (separate from cerebro.py
 import argparse
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from dotenv import load_dotenv
 from src.RateLimiter import RateLimiter
 from src.steamAPIclient import SteamAPIClient
 from src.SQLinserts import SQLinserts
@@ -68,8 +70,14 @@ async def collect_price_history(skip: int = 0, refresh: bool = False, fresh_days
     skipped = 0
     failed_items = []
 
-    async with SteamAPIClient(rate_limiter=rate_limiter) as client, SQLinserts() as db:
-        print(f"Database: SQLite at data/market_data.db")
+    # Backend: Postgres/Timescale only, DSN from env. No SQLite fallback.
+    load_dotenv()
+    timescale_dsn = os.getenv("CS2_PG_DSN")
+    if not timescale_dsn:
+        print("Error: CS2_PG_DSN not set (required; no SQLite fallback). Set it in .env")
+        return
+    async with SteamAPIClient(rate_limiter=rate_limiter) as client, SQLinserts(timescale_dsn=timescale_dsn) as db:
+        print("Database: Postgres/Timescale (CS2_PG_DSN)")
 
         # Auto-resume: skip items whose newest point is still fresh (no API call).
         # Stale items (older than fresh_days) are re-fetched to top up. --refresh

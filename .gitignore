@@ -39,3 +39,7 @@ data/*.db
 # Logs
 *.log
 miscellaneousNotes.txt
+
+# Postgres backups
+*.dump
+data/*.dump

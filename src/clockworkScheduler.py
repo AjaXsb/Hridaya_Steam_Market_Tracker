@@ -27,7 +27,8 @@ class ClockworkScheduler:
         self,
         items: Optional[List[dict]] = None,
         rate_limiter: Optional[RateLimiter] = None,
-        config_path: str = "config.yaml"
+        config_path: str = "config.yaml",
+        timescale_dsn: Optional[str] = None
     ):
         """
         Initialize the clockwork scheduler.
@@ -36,8 +37,11 @@ class ClockworkScheduler:
             items: Optional list of items to track. If None, loads from config.
             rate_limiter: Optional shared RateLimiter instance. If None, client creates its own.
             config_path: Path to the YAML configuration file (used if items is None)
+            timescale_dsn: Optional Postgres/Timescale DSN. When set, SQLinserts
+                writes to Postgres; when None it falls back to SQLite.
         """
         self.rate_limiter = rate_limiter
+        self.timescale_dsn = timescale_dsn
 
         if items is not None:
             self.history_items = items
@@ -195,7 +199,7 @@ class ClockworkScheduler:
         4. Execute all pricehistory items
         5. Repeat from step 2
         """
-        async with SteamAPIClient(rate_limiter=self.rate_limiter) as client, SQLinserts() as wizard:
+        async with SteamAPIClient(rate_limiter=self.rate_limiter) as client, SQLinserts(timescale_dsn=self.timescale_dsn) as wizard:
             self.steam_client = client
             self.data_wizard = wizard
 

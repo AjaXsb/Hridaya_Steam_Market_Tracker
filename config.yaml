@@ -8,33 +8,33 @@ LIMITS:
 
 # ITEMS
 TRACKING_ITEMS:
-  - market_hash_name: "Revolution Case"
+  - market_hash_name: "AK-47 | Redline (Field-Tested)"
     appid: 730
     currency: 1
     country: 'US'
     language: 'english'
-    polling-interval-in-seconds: 8
-    api_id: 'priceoverview'
-
-  - market_hash_name: "AWP | Neo-Noir (Factory New)"
-    appid: 730
-    currency: 3
-    country: 'IN'
-    language: 'english'
     polling-interval-in-seconds: 60
     api_id: 'itemordershistogram'
 
-  - market_hash_name: "Dreams & Nightmares Case"
+  - market_hash_name: "AWP | Neo-Noir (Factory New)"
     appid: 730
-    currency: 2
+    currency: 1
     country: 'IN'
     language: 'english'
-    polling-interval-in-seconds: 30
+    polling-interval-in-seconds: 60
+    api_id: 'priceoverview'
+
+  - market_hash_name: "Dreams & Nightmares Case"
+    appid: 730
+    currency: 1
+    country: 'IN'
+    language: 'english'
+    polling-interval-in-seconds: 8
     api_id: 'itemordersactivity'
   
   - market_hash_name: "MP9 | Starlight Protector (Field-Tested)"
     appid: 730
-    currency: 2
+    currency: 1
     country: 'IN'
     language: 'english'
     polling-interval-in-seconds: 60

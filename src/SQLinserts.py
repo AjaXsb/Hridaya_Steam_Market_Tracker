@@ -1,5 +1,5 @@
 import json
-import aiosqlite
+import os
 import asyncpg
 from datetime import datetime
 from typing import Optional
@@ -13,49 +13,51 @@ from src.dataClasses import (
 
 class SQLinserts:
     """
-    Manages data persistence across SQLite and TimescaleDB.
+    Manages data persistence in Postgres/TimescaleDB.
 
-    Routes data objects to the appropriate database based on type.
+    Routes data objects to the appropriate table based on type.
     Uses match-case for maximum efficiency.
     """
 
     def __init__(
         self,
-        sqlite_path: str = "data/market_data.db",
         timescale_dsn: Optional[str] = None,
         timescale_pool_min: int = 10,
         timescale_pool_max: int = 100
     ):
         """
-        Initialize database connections.
+        Initialize the database handler.
 
         Args:
-            sqlite_path: Path to SQLite database file
             timescale_dsn: PostgreSQL connection string for TimescaleDB
-                          (e.g., "postgresql://user:pass@localhost/dbname")
-                          If None, price_history will also use SQLite
+                          (e.g., "postgresql://user:pass@localhost/dbname").
+                          REQUIRED — Postgres is the only backend. A missing DSN
+                          raises immediately so a misconfigured env fails loudly
+                          instead of silently writing nowhere.
             timescale_pool_min: Minimum connections in TimescaleDB pool (default: 10)
             timescale_pool_max: Maximum connections in TimescaleDB pool (default: 100)
         """
-        self.sqlite_path = sqlite_path
+        if not timescale_dsn:
+            raise ValueError(
+                "timescale_dsn is required (set CS2_PG_DSN in .env). "
+                "Postgres is the only backend; there is no SQLite fallback."
+            )
         self.timescale_dsn = timescale_dsn
-        self.timescale_pool_min = timescale_pool_min
-        self.timescale_pool_max = timescale_pool_max
-        self.sqlite_conn: Optional[aiosqlite.Connection] = None
-        self.timescale_pool: Optional[asyncpg.Pool] = None
+        self.pg_pool_min = timescale_pool_min
+        self.pg_pool_max = timescale_pool_max
+        # Single shared Postgres/Timescale pool for ALL tables: the price_history
+        # hypertable AND the three live snapshot tables (price_overview,
+        # orders_histogram, orders_activity). One pool, one database.
+        self.pg_pool: Optional[asyncpg.Pool] = None
 
     async def initialize(self):
-        """Initialize database connections and create schemas."""
-        await self._initialize_sqlite()
-        if self.timescale_dsn:
-            await self._initialize_timescale()
+        """Open the Postgres pool and create schemas."""
+        await self._initialize_timescale()
 
     async def close(self):
-        """Close all database connections."""
-        if self.sqlite_conn:
-            await self.sqlite_conn.close()
-        if self.timescale_pool:
-            await self.timescale_pool.close()
+        """Close the Postgres pool."""
+        if self.pg_pool:
+            await self.pg_pool.close()
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -96,145 +98,196 @@ class SQLinserts:
             case _:
                 raise ValueError(f"Unknown data type: {type(data)}")
 
-    # ========================================================================
-    # SQLite Initialization
-    # ========================================================================
+    async def fetch_price_history_last_timestamps(self) -> dict:
+        """
+        Return {market_hash_name: newest stored point time} for price_history.
 
-    async def _initialize_sqlite(self):
-        """Create SQLite connection and tables for operational data."""
-        self.sqlite_conn = await aiosqlite.connect(self.sqlite_path)
+        Used by the bulk collector to decide what to skip. An item is only "done"
+        if its newest point is recent enough — items with months-old data are
+        stale and must be re-fetched (the per-point delta dedup makes that cheap,
+        inserting only the new tail). Returning the last timestamp (not just the
+        name) lets the collector apply a staleness window instead of blindly
+        skipping anything that has rows.
 
-        # Set busy timeout FIRST - this makes SQLite wait for locks instead of failing immediately
-        # Critical for concurrent access from multiple schedulers
-        await self.sqlite_conn.execute("PRAGMA busy_timeout=30000")  # Wait up to 30 seconds for locks
-
-        # Performance optimizations for SQLite
-        await self.sqlite_conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for concurrency
-        await self.sqlite_conn.execute("PRAGMA synchronous=NORMAL")  # Balance safety vs speed
-        await self.sqlite_conn.execute("PRAGMA cache_size=-64000")  # 64MB cache (negative = KB)
-        await self.sqlite_conn.execute("PRAGMA temp_store=MEMORY")  # Store temp tables in RAM
-        await self.sqlite_conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
-        await self.sqlite_conn.execute("PRAGMA page_size=4096")  # Optimal page size for modern systems
-
-        # Create tables
-        await self._create_sqlite_tables()
-
-    async def _create_sqlite_tables(self):
-        """Create SQLite schema for operational snapshots."""
-        assert self.sqlite_conn is not None, "SQLite connection not initialized"
-
-        # Price Overview - current market prices
-        await self.sqlite_conn.execute("""
-            CREATE TABLE IF NOT EXISTS price_overview (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                appid INTEGER NOT NULL,
-                market_hash_name TEXT NOT NULL,
-                item_nameid INTEGER,
-                currency TEXT NOT NULL,
-                country TEXT NOT NULL,
-                language TEXT NOT NULL,
-                lowest_price REAL,
-                median_price REAL,
-                volume INTEGER
-            )
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_overview_item_time
-            ON price_overview(market_hash_name, timestamp DESC)
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_overview_timestamp
-            ON price_overview(timestamp DESC)
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_overview_appid
-            ON price_overview(appid, market_hash_name, timestamp DESC)
-        """)
-
-        # Orders Histogram - order book snapshots
-        await self.sqlite_conn.execute("""
-            CREATE TABLE IF NOT EXISTS orders_histogram (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                appid INTEGER NOT NULL,
-                market_hash_name TEXT NOT NULL,
-                item_nameid INTEGER NOT NULL,
-                currency TEXT NOT NULL,
-                country TEXT NOT NULL,
-                language TEXT NOT NULL,
-                buy_order_table TEXT,
-                sell_order_table TEXT,
-                buy_order_graph TEXT,
-                sell_order_graph TEXT,
-                buy_order_count INTEGER,
-                sell_order_count INTEGER,
-                highest_buy_order REAL,
-                lowest_sell_order REAL
-            )
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_histogram_item_time
-            ON orders_histogram(market_hash_name, timestamp DESC)
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_histogram_timestamp
-            ON orders_histogram(timestamp DESC)
-        """)
-
-        # Orders Activity - trade activity log
-        await self.sqlite_conn.execute("""
-            CREATE TABLE IF NOT EXISTS orders_activity (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                appid INTEGER NOT NULL,
-                market_hash_name TEXT NOT NULL,
-                item_nameid INTEGER NOT NULL,
-                currency TEXT NOT NULL,
-                country TEXT NOT NULL,
-                language TEXT NOT NULL,
-                activity_raw TEXT,
-                parsed_activities TEXT,
-                activity_count INTEGER,
-                steam_timestamp INTEGER NOT NULL
-            )
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_activity_item_time
-            ON orders_activity(market_hash_name, timestamp DESC)
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_activity_timestamp
-            ON orders_activity(timestamp DESC)
-        """)
-
-        await self.sqlite_conn.commit()
+        Timescale returns datetime objects.
+        """
+        async with self.pg_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT market_hash_name, MAX(time) AS last_time
+                FROM price_history GROUP BY market_hash_name
+            """)
+            return {row['market_hash_name']: row['last_time'] for row in rows}
 
     # ========================================================================
     # TimescaleDB Initialization
     # ========================================================================
 
     async def _initialize_timescale(self):
-        """Create TimescaleDB connection pool and hypertable."""
-        self.timescale_pool = await asyncpg.create_pool(
+        """Create the shared Postgres pool and all Postgres-backed tables.
+
+        Builds the single pool used by every Postgres table — the price_history
+        hypertable and the three live snapshot tables. Each new connection
+        registers a JSONB codec so Python dicts/lists pass through to JSONB
+        columns directly and come back as structured objects (not strings).
+        """
+        self.pg_pool = await asyncpg.create_pool(
             self.timescale_dsn,
-            min_size=self.timescale_pool_min,
-            max_size=self.timescale_pool_max,
+            min_size=self.pg_pool_min,
+            max_size=self.pg_pool_max,
             command_timeout=60,  # 60 second query timeout
-            max_inactive_connection_lifetime=300  # 5 minute idle connection lifetime
+            max_inactive_connection_lifetime=300,  # 5 minute idle connection lifetime
+            init=self._register_jsonb_codec
         )
         await self._create_timescale_tables()
+        await self._create_live_tables()
+
+    async def _register_jsonb_codec(self, conn):
+        """Make asyncpg encode/decode JSONB as native Python objects.
+
+        asyncpg does NOT auto-encode dicts to JSONB by default. Registering this
+        codec on every pooled connection lets the live-table inserts pass Python
+        lists/dicts straight into JSONB columns, and reads return parsed JSON
+        instead of raw strings — so we can aggregate inside the JSON in SQL later.
+        """
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+
+    async def _create_live_tables(self):
+        """Create the three live snapshot tables in Postgres.
+
+        Postgres types throughout: BIGSERIAL keys,
+        TIMESTAMPTZ timestamps defaulting to NOW(), DOUBLE PRECISION prices, and
+        JSONB for the genuinely-nested columns (order tables/graphs, activity
+        blobs) so they're queryable in SQL. Scalar columns stay plain types.
+        """
+        async with self.pg_pool.acquire() as conn:
+            # Price Overview - current market prices (single-row snapshots)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS price_overview (
+                    id BIGSERIAL,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    appid INTEGER NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    item_nameid INTEGER,
+                    currency TEXT NOT NULL,
+                    country TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    lowest_price DOUBLE PRECISION,
+                    median_price DOUBLE PRECISION,
+                    volume INTEGER,
+                    PRIMARY KEY (id, timestamp)
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_overview_item_time
+                ON price_overview(market_hash_name, timestamp DESC)
+            """)
+
+            # Orders Histogram - order book snapshots (nested tables/graphs as JSONB)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS orders_histogram (
+                    id BIGSERIAL,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    appid INTEGER NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    item_nameid INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
+                    country TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    buy_order_table JSONB,
+                    sell_order_table JSONB,
+                    buy_order_graph JSONB,
+                    sell_order_graph JSONB,
+                    buy_order_count INTEGER,
+                    sell_order_count INTEGER,
+                    highest_buy_order DOUBLE PRECISION,
+                    lowest_sell_order DOUBLE PRECISION,
+                    PRIMARY KEY (id, timestamp)
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_histogram_item_time
+                ON orders_histogram(market_hash_name, timestamp DESC)
+            """)
+
+            # Orders Activity - trade activity log (raw + parsed blobs as JSONB)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS orders_activity (
+                    id BIGSERIAL,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    appid INTEGER NOT NULL,
+                    market_hash_name TEXT NOT NULL,
+                    item_nameid INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
+                    country TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    activity_raw JSONB,
+                    parsed_activities JSONB,
+                    activity_count INTEGER,
+                    steam_timestamp BIGINT NOT NULL,
+                    PRIMARY KEY (id, timestamp)
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_activity_item_time
+                ON orders_activity(market_hash_name, timestamp DESC)
+            """)
+
+            # ----------------------------------------------------------------
+            # Convert the three live tables to Timescale hypertables.
+            #
+            # All partition on their 'timestamp' column. The composite PK
+            # (id, timestamp) above exists specifically so these conversions
+            # are legal — Timescale requires every unique/primary key to
+            # include the partitioning column.
+            #
+            # Policies are deliberate, NOT uniform:
+            #   - orders_histogram / orders_activity: a high-frequency firehose.
+            #     Old depth snapshots and tape have little value, so retain
+            #     only 30 days and compress aggressively (after 1 day) so most
+            #     of the retained window sits compressed.
+            #   - price_overview: price-over-time, smaller per row, a candidate
+            #     to fold into long-term history later — so NO retention, just
+            #     compression after 7 days.
+            # All segment compression by market_hash_name, matching
+            # price_history, so per-item scans stay cheap when compressed.
+            # ----------------------------------------------------------------
+            for table in ("price_overview", "orders_histogram", "orders_activity"):
+                await conn.execute(
+                    "SELECT create_hypertable($1, 'timestamp', if_not_exists => TRUE)",
+                    table,
+                )
+                await conn.execute(f"""
+                    ALTER TABLE {table} SET (
+                        timescaledb.compress,
+                        timescaledb.compress_segmentby = 'market_hash_name'
+                    )
+                """)
+
+            # price_overview: compress after 7 days, NO retention (keep growing).
+            await conn.execute("""
+                SELECT add_compression_policy('price_overview',
+                    INTERVAL '7 days', if_not_exists => TRUE)
+            """)
+
+            # Firehose tables: compress after 1 day, retain only 30 days.
+            for table in ("orders_histogram", "orders_activity"):
+                await conn.execute(
+                    "SELECT add_compression_policy($1, INTERVAL '1 day', if_not_exists => TRUE)",
+                    table,
+                )
+                await conn.execute(
+                    "SELECT add_retention_policy($1, INTERVAL '30 days', if_not_exists => TRUE)",
+                    table,
+                )
 
     async def _create_timescale_tables(self):
         """Create TimescaleDB hypertable for price history."""
-        async with self.timescale_pool.acquire() as conn:
+        async with self.pg_pool.acquire() as conn:
             # Create table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
@@ -293,102 +346,118 @@ class SQLinserts:
                 """)
 
     # ========================================================================
-    # SQLite Storage Methods
+    # Live Storage Methods (Postgres)
     # ========================================================================
 
     async def _store_price_overview(self, data: PriceOverviewData, item_config: dict):
-        """Store price overview snapshot to SQLite."""
-        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+        """Store a price overview snapshot."""
+        return await self._store_price_overview_postgres(data, item_config)
 
-        # Parse prices and extract currency
+    async def _store_histogram(self, data: OrdersHistogramData, item_config: dict):
+        """Store an order book histogram snapshot."""
+        return await self._store_histogram_postgres(data, item_config)
+
+    async def _store_activity(self, data: OrdersActivityData, item_config: dict):
+        """Store a trade activity snapshot."""
+        return await self._store_activity_postgres(data, item_config)
+
+    # ------------------------------------------------------------------------
+    # Postgres live storage
+    # ------------------------------------------------------------------------
+
+    async def _store_price_overview_postgres(self, data: PriceOverviewData, item_config: dict):
+        """Insert a single price overview snapshot into Postgres."""
         lowest_price_float = self._parse_steam_price(data.lowest_price)
         median_price_float = self._parse_steam_price(data.median_price)
         volume_int = self._parse_volume(data.volume)
         currency = self._extract_currency(data.lowest_price or data.median_price or "") or 'USD'
 
-        await self.sqlite_conn.execute("""
-            INSERT INTO price_overview (
-                appid, market_hash_name, item_nameid, currency, country, language,
-                lowest_price, median_price, volume
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            item_config['appid'],
-            item_config['market_hash_name'],
-            item_config.get('item_nameid'),
-            currency,
-            item_config.get('country', 'US'),
-            item_config.get('language', 'english'),
-            lowest_price_float,
-            median_price_float,
-            volume_int
-        ))
-        await self.sqlite_conn.commit()
+        async with self.pg_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO price_overview (
+                    appid, market_hash_name, item_nameid, currency, country, language,
+                    lowest_price, median_price, volume
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
+                item_config['appid'],
+                item_config['market_hash_name'],
+                item_config.get('item_nameid'),
+                currency,
+                item_config.get('country', 'US'),
+                item_config.get('language', 'english'),
+                lowest_price_float,
+                median_price_float,
+                volume_int
+            )
         return currency
 
-    async def _store_histogram(self, data: OrdersHistogramData, item_config: dict):
-        """Store order book histogram snapshot to SQLite."""
-        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+    async def _store_histogram_postgres(self, data: OrdersHistogramData, item_config: dict):
+        """Insert a single order book histogram snapshot into Postgres.
 
-        # Convert order tables to JSON (keep original structure with price/quantity)
-        buy_orders_json = json.dumps([order.model_dump() for order in data.buy_order_table]) if data.buy_order_table else None
-        sell_orders_json = json.dumps([order.model_dump() for order in data.sell_order_table]) if data.sell_order_table else None
+        The four nested columns go into JSONB. The registered JSONB codec encodes
+        Python lists directly, so we pass the structures through (no json.dumps).
+        """
+        # Nested structures → JSONB (codec serializes these dicts/lists for us)
+        buy_orders = [order.model_dump() for order in data.buy_order_table] if data.buy_order_table else None
+        sell_orders = [order.model_dump() for order in data.sell_order_table] if data.sell_order_table else None
+        buy_graph = data.buy_order_graph if data.buy_order_graph else None
+        sell_graph = data.sell_order_graph if data.sell_order_graph else None
 
-        # Convert graph data to JSON (arrays of [price, quantity, label])
-        buy_graph_json = json.dumps(data.buy_order_graph) if data.buy_order_graph else None
-        sell_graph_json = json.dumps(data.sell_order_graph) if data.sell_order_graph else None
+        # Scalar numeric fields
+        # Counts: parse via _parse_volume so thousands-separated values ("1,234")
+        # don't get dropped to NULL the way .isdigit() did (the buy-side bug).
+        buy_count = self._parse_volume(str(data.buy_order_count)) if data.buy_order_count is not None else None
+        sell_count = self._parse_volume(str(data.sell_order_count)) if data.sell_order_count is not None else None
+        # These two are Steam integer cents -> major units (see helper); do NOT
+        # use _parse_steam_price here (it would leave them 100x too large).
+        highest_buy = self._convert_steam_order_price_to_major_units(data.highest_buy_order)
+        lowest_sell = self._convert_steam_order_price_to_major_units(data.lowest_sell_order)
 
-        # Parse numeric fields
-        buy_count = int(data.buy_order_count) if isinstance(data.buy_order_count, str) and data.buy_order_count.isdigit() else (data.buy_order_count if isinstance(data.buy_order_count, int) else None)
-        sell_count = int(data.sell_order_count) if isinstance(data.sell_order_count, str) and data.sell_order_count.isdigit() else (data.sell_order_count if isinstance(data.sell_order_count, int) else None)
-        highest_buy = self._parse_steam_price(data.highest_buy_order)
-        lowest_sell = self._parse_steam_price(data.lowest_sell_order)
-
-        # Extract currency from price_suffix or buy_order_price
         currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.buy_order_price or "") or 'USD'
 
-        await self.sqlite_conn.execute("""
-            INSERT INTO orders_histogram (
-                appid, market_hash_name, item_nameid, currency, country, language,
-                buy_order_table, sell_order_table,
-                buy_order_graph, sell_order_graph,
-                buy_order_count, sell_order_count,
-                highest_buy_order, lowest_sell_order
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            item_config['appid'],
-            item_config['market_hash_name'],
-            item_config['item_nameid'],
-            currency,
-            item_config.get('country', 'US'),
-            item_config.get('language', 'english'),
-            buy_orders_json,
-            sell_orders_json,
-            buy_graph_json,
-            sell_graph_json,
-            buy_count,
-            sell_count,
-            highest_buy,
-            lowest_sell
-        ))
-        await self.sqlite_conn.commit()
+        async with self.pg_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO orders_histogram (
+                    appid, market_hash_name, item_nameid, currency, country, language,
+                    buy_order_table, sell_order_table,
+                    buy_order_graph, sell_order_graph,
+                    buy_order_count, sell_order_count,
+                    highest_buy_order, lowest_sell_order
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            """,
+                item_config['appid'],
+                item_config['market_hash_name'],
+                item_config['item_nameid'],
+                currency,
+                item_config.get('country', 'US'),
+                item_config.get('language', 'english'),
+                buy_orders,
+                sell_orders,
+                buy_graph,
+                sell_graph,
+                buy_count,
+                sell_count,
+                highest_buy,
+                lowest_sell
+            )
         return currency
 
-    async def _store_activity(self, data: OrdersActivityData, item_config: dict):
-        """Store trade activity snapshot to SQLite."""
-        assert self.sqlite_conn is not None, "SQLite connection not initialized"
+    async def _store_activity_postgres(self, data: OrdersActivityData, item_config: dict):
+        """Insert a single trade activity snapshot into Postgres.
 
-        # Store raw HTML activity as JSON array of strings
-        activity_raw_json = json.dumps(data.activity) if data.activity else None
+        activity_raw and parsed_activities go into JSONB. parsed activities are
+        dumped via model_dump(mode='json') first so datetimes become ISO strings,
+        then the JSONB codec serializes the resulting list.
+        """
+        # Raw HTML activity strings → JSONB array
+        activity_raw = data.activity if data.activity else None
 
-        # Convert parsed activities to JSON (serialize datetime properly)
+        # Parsed activities → JSONB (model_dump(mode='json') normalizes datetimes)
         if data.parsed_activities:
-            parsed_json = json.dumps([
-                activity.model_dump(mode='json') for activity in data.parsed_activities
-            ], default=str)  # Fallback for any remaining non-serializable types
+            parsed_activities = [activity.model_dump(mode='json') for activity in data.parsed_activities]
         else:
-            parsed_json = None
+            parsed_activities = None
 
-        # Count activities
         activity_count = len(data.parsed_activities) if data.parsed_activities else 0
 
         # Extract currency from first parsed activity price (if available)
@@ -396,28 +465,27 @@ class SQLinserts:
         if data.parsed_activities and len(data.parsed_activities) > 0:
             first_price = data.parsed_activities[0].price
             currency = self._extract_currency(first_price)
-
         currency = currency or 'USD'
 
-        await self.sqlite_conn.execute("""
-            INSERT INTO orders_activity (
-                appid, market_hash_name, item_nameid, currency, country, language,
-                activity_raw, parsed_activities,
-                activity_count, steam_timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            item_config['appid'],
-            item_config['market_hash_name'],
-            item_config['item_nameid'],
-            currency,
-            item_config.get('country', 'US'),
-            item_config.get('language', 'english'),
-            activity_raw_json,
-            parsed_json,
-            activity_count,
-            data.timestamp
-        ))
-        await self.sqlite_conn.commit()
+        async with self.pg_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO orders_activity (
+                    appid, market_hash_name, item_nameid, currency, country, language,
+                    activity_raw, parsed_activities,
+                    activity_count, steam_timestamp
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            """,
+                item_config['appid'],
+                item_config['market_hash_name'],
+                item_config['item_nameid'],
+                currency,
+                item_config.get('country', 'US'),
+                item_config.get('language', 'english'),
+                activity_raw,
+                parsed_activities,
+                activity_count,
+                data.timestamp
+            )
         return currency
 
     # ========================================================================
@@ -426,15 +494,12 @@ class SQLinserts:
 
     async def _store_price_history(self, data: PriceHistoryData, item_config: dict):
         """
-        Store price history to TimescaleDB (or SQLite if TimescaleDB not configured).
+        Store price history to TimescaleDB.
 
         Loops through all price points in data.prices and inserts individually
         with UPSERT to avoid duplicates.
         """
-        if self.timescale_pool:
-            return await self._store_price_history_timescale(data, item_config)
-        else:
-            return await self._store_price_history_sqlite(data, item_config)
+        return await self._store_price_history_timescale(data, item_config)
 
     async def _store_price_history_timescale(self, data: PriceHistoryData, item_config: dict):
         """
@@ -446,7 +511,7 @@ class SQLinserts:
         market_hash_name = item_config['market_hash_name']
 
         # Query the most recent timestamp we have for this item
-        async with self.timescale_pool.acquire() as conn:
+        async with self.pg_pool.acquire() as conn:
             last_timestamp = await conn.fetchval("""
                 SELECT MAX(time) FROM price_history WHERE market_hash_name = $1
             """, market_hash_name)
@@ -496,7 +561,7 @@ class SQLinserts:
 
         # Batch insert with chunking to avoid memory issues
         BATCH_SIZE = 100
-        async with self.timescale_pool.acquire() as conn:
+        async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
                 for i in range(0, len(records), BATCH_SIZE):
                     batch = records[i:i + BATCH_SIZE]
@@ -508,115 +573,6 @@ class SQLinserts:
                     """, batch)
 
         print(f"  ✓ {market_hash_name}: {len(records)} new historical price points")
-        return currency
-
-    async def _store_price_history_sqlite(self, data: PriceHistoryData, item_config: dict):
-        """
-        Fallback: Store price history in SQLite if TimescaleDB not available.
-
-        Only inserts NEW points (after the most recent timestamp we already have).
-        Initial run inserts all points; subsequent runs insert only the delta.
-        """
-        assert self.sqlite_conn is not None, "SQLite connection not initialized"
-
-        market_hash_name = item_config['market_hash_name']
-
-        # Create table if not exists
-        await self.sqlite_conn.execute("""
-            CREATE TABLE IF NOT EXISTS price_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                time DATETIME NOT NULL,
-                appid INTEGER NOT NULL,
-                market_hash_name TEXT NOT NULL,
-                item_nameid INTEGER,
-                currency TEXT NOT NULL,
-                country TEXT NOT NULL,
-                language TEXT NOT NULL,
-                price REAL NOT NULL,
-                volume INTEGER NOT NULL,
-                fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(market_hash_name, time)
-            )
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_history_item_time
-            ON price_history(market_hash_name, time DESC)
-        """)
-
-        await self.sqlite_conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_history_timestamp
-            ON price_history(time DESC)
-        """)
-
-        # Query the most recent timestamp we have for this item
-        async with self.sqlite_conn.execute("""
-            SELECT MAX(time) FROM price_history WHERE market_hash_name = ?
-        """, (market_hash_name,)) as cursor:
-            row = await cursor.fetchone()
-            last_timestamp_str = row[0] if row else None
-
-        # Parse last_timestamp from SQLite string format
-        last_timestamp = None
-        if last_timestamp_str:
-            last_timestamp = datetime.strptime(last_timestamp_str, '%Y-%m-%d %H:%M:%S')
-
-        # Extract currency from price_prefix or price_suffix
-        currency = self._extract_currency(data.price_suffix) or self._extract_currency(data.price_prefix) or 'USD'
-
-        # Steam returns data in ascending order (oldest → newest)
-        # Iterate in reverse to find new points at the end, stop when we hit existing data
-        records = []
-        for price_point in reversed(data.prices):
-            date_string, price, volume = price_point
-
-            # Parse Steam's datetime format to proper timestamp
-            parsed_time = self._parse_steam_datetime(date_string)
-            if not parsed_time:
-                continue  # Skip invalid dates
-
-            # Stop when we reach data we already have
-            if last_timestamp and parsed_time <= last_timestamp:
-                break
-
-            # Parse volume to integer
-            volume_int = self._parse_volume(volume)
-            if volume_int is None:
-                volume_int = 0
-
-            records.append((
-                parsed_time.strftime('%Y-%m-%d %H:%M:%S'),  # SQLite datetime format
-                item_config['appid'],
-                market_hash_name,
-                item_config.get('item_nameid'),
-                currency,
-                item_config.get('country', 'US'),
-                item_config.get('language', 'english'),
-                float(price),
-                volume_int
-            ))
-
-        if not records:
-            print(f"  ✓ {market_hash_name}: up to date")
-            return currency
-
-        # Reverse to restore chronological order for insert
-        records.reverse()
-
-        # Batch insert with chunking
-        BATCH_SIZE = 50  # SQLite performs best with smaller batches than PostgreSQL
-        for i in range(0, len(records), BATCH_SIZE):
-            batch = records[i:i + BATCH_SIZE]
-            await self.sqlite_conn.executemany("""
-                INSERT INTO price_history (
-                    time, appid, market_hash_name, item_nameid, currency, country, language, price, volume
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(market_hash_name, time) DO NOTHING
-            """, batch)
-
-        await self.sqlite_conn.commit()
-
-        print(f"  ✓ {market_hash_name}: {len(records)} new points")
         return currency
 
     # ========================================================================
@@ -667,6 +623,24 @@ class SQLinserts:
                     cleaned = cleaned.replace(',', '')
 
             return float(cleaned)
+        except (ValueError, AttributeError):
+            return None
+
+    def _convert_steam_order_price_to_major_units(self, cents_str) -> Optional[float]:
+        """Convert Steam's order-book price (integer minor units) to major units.
+
+        The itemordershistogram endpoint returns highest_buy_order and
+        lowest_sell_order as a separator-less integer in the currency's minor
+        unit (e.g. "6711" = 67.11, "177" = 1.77). _parse_steam_price would read
+        "6711" as 6711.0, leaving these two scalars 100x too large and out of
+        scale with price_overview's major-unit prices. Divide by 100 so the two
+        tables agree. ONLY for these scalar fields — the JSONB order-table price
+        strings ("67,11€") already parse correctly via _parse_steam_price.
+        """
+        if cents_str is None or cents_str == "":
+            return None
+        try:
+            return int(str(cents_str).replace(',', '')) / 100.0
         except (ValueError, AttributeError):
             return None
 
@@ -761,7 +735,7 @@ class SQLinserts:
                 dt = datetime.strptime(clean_str, "%b %d %Y %H")
 
                 # Return as UTC (Steam uses UTC for price history)
-                return dt.replace(tzinfo=None)  # SQLite doesn't handle timezones well
+                return dt.replace(tzinfo=None)  # naive UTC; the timescale insert path treats it as UTC
 
             return None
         except (ValueError, IndexError, AttributeError):
@@ -775,8 +749,7 @@ class SQLinserts:
 async def example_usage():
     """Example of how schedulers will use DataWizard."""
     async with SQLinserts(
-        sqlite_path="data/market_data.db",
-        timescale_dsn="postgresql://user:pass@localhost/cs2market"  # Optional
+        timescale_dsn=os.getenv("CS2_PG_DSN")  # Required; loaded from .env
     ) as wizard:
         # After fetching data from API:
         # result = await client.fetch_price_overview(...)

@@ -1,7 +1,6 @@
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.2
 aiosignal==1.4.0
-aiosqlite==0.22.0
 annotated-types==0.7.0
 asyncpg==0.31.0
 attrs==25.4.0

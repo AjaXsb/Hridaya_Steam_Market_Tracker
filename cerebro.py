@@ -10,8 +10,10 @@ Responsibilities:
 """
 
 import asyncio
+import os
 import signal
 from typing import Optional
+from dotenv import load_dotenv
 from utility.loadConfig_utility import load_config_from_yaml
 from src.RateLimiter import RateLimiter
 from src.snoozerScheduler import snoozerScheduler
@@ -151,7 +153,16 @@ class Orchestrator:
         window_seconds = self.config['LIMITS']['WINDOW_SECONDS']
         self.rate_limiter = RateLimiter(max_requests=rate_limit, window_seconds=window_seconds)
         print(f"  ✓ Shared RateLimiter created ({rate_limit} req/{window_seconds}s)")
-        print("  ✓ Database: SQLite at data/market_data.db")
+
+        # Backend: Postgres/Timescale only. DSN comes from CS2_PG_DSN (.env),
+        # never hardcoded. There is no SQLite fallback — fail loudly if unset.
+        timescale_dsn = os.getenv("CS2_PG_DSN")
+        if not timescale_dsn:
+            print("\n❌ CS2_PG_DSN is not set. Postgres is required (no SQLite fallback).")
+            print("   Set it in .env, e.g. CS2_PG_DSN=postgresql://user:pass@localhost:5432/cs2market")
+            exit(1)
+        print("  ✓ Database: Postgres/Timescale (CS2_PG_DSN)")
+        self.timescale_dsn = timescale_dsn
 
         # Filter items by type: live items (not pricehistory) vs history items
         live_items = []
@@ -167,14 +178,16 @@ class Orchestrator:
         if live_items:
             self.snoozerScheduler = snoozerScheduler(
                 live_items=live_items,
-                rate_limiter=self.rate_limiter
+                rate_limiter=self.rate_limiter,
+                timescale_dsn=self.timescale_dsn
             )
             print(f"  ✓ Started HIGH frequency tracking on ({len(live_items)} items)")
 
         if history_items:
             self.clockworkScheduler = ClockworkScheduler(
                 items=history_items,
-                rate_limiter=self.rate_limiter
+                rate_limiter=self.rate_limiter,
+                timescale_dsn=self.timescale_dsn
             )
             print(f"  ✓ Started ARCHIVAL work + all known historical snapshots available right now on ({len(history_items)} items)")
 
@@ -266,6 +279,7 @@ class Orchestrator:
 
 async def main():
     """Entry point for the backend."""
+    load_dotenv()  # Pull CS2_PG_DSN (and Steam cookies) from .env
     orchestrator = Orchestrator(config_path="config.yaml")
     await orchestrator.run()
 
