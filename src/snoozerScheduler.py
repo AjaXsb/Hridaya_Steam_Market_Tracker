@@ -82,6 +82,50 @@ class snoozerScheduler:
 
         return live_items
 
+    def reconcile_live_set(self, new_items: List[dict]) -> dict:
+        """Swap the live poller set to a new desired set, live, no restart.
+
+        This scheduler is a SINGLE loop over self.live_items (not one task per
+        item), so reconciling means rebuilding that list — not creating/cancelling
+        tasks. The run loop holds a reference to the old list for the iteration
+        it's in and picks up the rebound list on its next pass, so an atomic
+        rebind here is safe against the loop.
+
+        Surviving items keep their runtime state (last_update, skip_until,
+        consecutive_backoffs) keyed by (market_hash_name, api_id) — UNIQUE in the
+        table, so the key is stable. New items get last_update=None so they fire
+        immediately (urgency == inf). Removed items simply drop out of the list.
+
+        The shared global RateLimiter caps every call at the budget regardless of
+        how many pollers exist, so adding items can't transiently exceed the
+        limit — the feasibility gate (in the caller) guards sustained demand,
+        the limiter guards the instant.
+
+        Returns a small diff summary for logging.
+        """
+        prev = {(i['market_hash_name'], i['api_id']): i for i in self.live_items}
+        new_keys = {(i['market_hash_name'], i['api_id']) for i in new_items}
+
+        rebuilt = []
+        for item in new_items:
+            key = (item['market_hash_name'], item['api_id'])
+            old = prev.get(key)
+            if old is not None:
+                # Carry runtime state; new config fields (interval/currency) win.
+                item['last_update'] = old.get('last_update')
+                item['skip_until'] = old.get('skip_until')
+                item['consecutive_backoffs'] = old.get('consecutive_backoffs', 0)
+            else:
+                item['last_update'] = None  # brand new -> poll asap
+            rebuilt.append(item)
+
+        added = sorted(new_keys - prev.keys())
+        removed = sorted(prev.keys() - new_keys)
+
+        # Atomic rebind — the running loop sees the new list next pass.
+        self.live_items = rebuilt
+        return {"added": added, "removed": removed, "total": len(rebuilt)}
+
     def calculate_urgency(self, item: dict) -> float:
         """
         Calculate urgency score for an item.
@@ -138,8 +182,12 @@ class snoozerScheduler:
                     time_until_urgent = (1.0 - urgency) * item['polling-interval-in-seconds']
                     min_sleep = min(min_sleep, time_until_urgent)
 
-        # If all items are overdue, don't sleep
-        return min_sleep if min_sleep != float('inf') else 0
+        # min_sleep stays inf only when there are no schedulable items (empty
+        # live set, e.g. boot with an empty table). Idle-poll briefly instead of
+        # busy-spinning on sleep(0) so a runtime-added item (via reconcile) is
+        # picked up within a couple seconds without a restart. When items exist
+        # but none are overdue, min_sleep is finite (time-until-urgent).
+        return min_sleep if min_sleep != float('inf') else 2.0
 
     def apply_exponential_backoff(self, item: dict, error_code: int) -> None:
         """

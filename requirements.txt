@@ -16,6 +16,15 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 yarl==1.22.0
 
+# Read-path API (api/ package)
+fastapi==0.138.0
+uvicorn==0.49.0
+
+# Config↔table sync (file watcher for config.yaml)
+watchdog==6.0.0
+# Round-trip YAML so table→config writeback preserves comments/structure
+ruamel.yaml==0.18.6
+
 # Visualization & analysis
 pandas
 plotly
