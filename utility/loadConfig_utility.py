@@ -5,17 +5,26 @@ from pathlib import Path
 from typing import Dict
 
 
-def fetch_cs2_item_name_ids() -> Dict[str, int]:
+def fetch_cs2_item_name_ids(force_refresh: bool = False) -> Dict[str, int]:
     """
     Fetch CS2 item name IDs from GitHub repository.
+
+    Uses the local cache when present, unless force_refresh is set. The cache is
+    a point-in-time snapshot, so items added to Steam after it was written are
+    missing from it — pass force_refresh=True to pull the current map and rewrite
+    the cache.
+
+    Args:
+        force_refresh: Skip the cache and fetch fresh from GitHub, overwriting
+            the local cache with the result.
 
     Returns:
         Dictionary mapping market_hash_name to item_nameid
     """
     cache_file = Path("data/cs2_item_ids.json")
 
-    # Use cached version if it exists
-    if cache_file.exists():
+    # Use cached version if it exists (unless a fresh pull was requested)
+    if cache_file.exists() and not force_refresh:
         with open(cache_file, 'r') as f:
             return json.load(f)
 
@@ -35,7 +44,33 @@ def fetch_cs2_item_name_ids() -> Dict[str, int]:
 
     except Exception as e:
         print(f"Warning: Could not fetch item name IDs from GitHub: {e}")
+        # Fall back to a stale cache rather than nothing, if one exists.
+        if cache_file.exists():
+            with open(cache_file, 'r') as f:
+                return json.load(f)
         return {}
+
+
+def look_up_item_nameid(market_hash_name: str):
+    """
+    Resolve one market_hash_name to its numeric item_nameid.
+
+    Tries the cached map first; on a miss, refreshes from GitHub once (the cache
+    may simply be stale and missing a newly released item) and retries against
+    the refreshed map. Returns None only when the name is absent even from the
+    freshly fetched map.
+
+    Args:
+        market_hash_name: Exact Steam market hash name.
+
+    Returns:
+        The item_nameid as an int, or None if the name can't be resolved.
+    """
+    item_id = fetch_cs2_item_name_ids().get(market_hash_name)
+    if item_id is not None:
+        return item_id
+    # Cache miss — it may just be stale. Pull the current map and retry.
+    return fetch_cs2_item_name_ids(force_refresh=True).get(market_hash_name)
 
 
 def populate_item_name_ids(config: dict) -> dict:

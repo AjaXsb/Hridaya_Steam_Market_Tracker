@@ -48,14 +48,23 @@ class TrackedItemCreate(BaseModel):
 
 
 class TrackedItemPatch(BaseModel):
-    """Body for PATCH /tracked-items/{id} — change cadence, stream, or enabled.
+    """Body for PATCH /tracked-items — change cadence, stream, or enabled.
 
-    All fields optional; only the provided ones change. Validated in-endpoint
+    The row is targeted by its real unique key (market_hash_name, stream), never
+    by the internal autoincrement id. `stream` is the target disambiguator: an
+    item can be tracked on several streams, so name alone can match more than one
+    row. It is optional only so the endpoint can answer ambiguity with a clear
+    409 (rather than Pydantic's 422) when a name matches multiple rows.
+
+    The mutable fields are all optional; only the provided ones change. Set
+    `new_stream` to move the row to a different stream. Validated in-endpoint
     (400 on bad values), same untrusted-writer stance as create.
     """
 
-    poll_interval_sec: Optional[int] = None
+    market_hash_name: str
     stream: Optional[str] = None
+    poll_interval_sec: Optional[int] = None
+    new_stream: Optional[str] = None
     enabled: Optional[bool] = None
 
 
@@ -66,10 +75,15 @@ class TrackingAck(BaseModel):
     """
 
     status: str
-    id: Optional[int] = None
     market_hash_name: Optional[str] = None
     stream: Optional[str] = None
     note: Optional[str] = None
+    # Current data via the SAME read function the matching GET uses, seeded into
+    # the response so the frontend can prime its query cache without an extra
+    # round-trip. Possibly an empty payload (just-tracked, no data yet). Shape
+    # depends on the item's stream: OverviewResponse | BookSnapshot |
+    # ActivityResponse.
+    data: Optional[Any] = None
 
 
 class TrackedItem(BaseModel):
@@ -117,10 +131,14 @@ class PricePoint(BaseModel):
 
 
 class OverviewResponse(BaseModel):
-    """Recent priceoverview snapshots for one item."""
+    """Recent priceoverview snapshots for one item.
 
-    currency: str
-    points: List[PricePoint]
+    currency is Optional so a tracked-but-empty item can return a 200 with an
+    empty payload (currency=None, points=[]) instead of a 404.
+    """
+
+    currency: Optional[str] = None
+    points: List[PricePoint] = []
 
 
 class HistoryPoint(BaseModel):
@@ -146,11 +164,15 @@ class BookSnapshot(BaseModel):
     structures by the asyncpg codec, so they pass straight through as arrays
     (not strings): the order tables are lists of {price, quantity} objects and
     the graphs are arrays of [price, cumulative_quantity, label] triples.
+
+    timestamp/currency are Optional so a tracked-but-empty item returns a 200
+    with an empty payload (timestamp=None, everything null) rather than a 404.
+    market_hash_name is always filled from the request path.
     """
 
     market_hash_name: str
-    timestamp: datetime
-    currency: str
+    timestamp: Optional[datetime] = None
+    currency: Optional[str] = None
     buy_order_table: Optional[List[Any]] = None
     sell_order_table: Optional[List[Any]] = None
     buy_order_graph: Optional[List[Any]] = None
@@ -181,7 +203,11 @@ class TradeEvent(BaseModel):
 
 
 class ActivityResponse(BaseModel):
-    """Latest parsed trade activity for one item."""
+    """Latest parsed trade activity for one item.
 
-    currency: str
-    events: List[TradeEvent]
+    currency is Optional so a tracked-but-empty item returns a 200 with an empty
+    payload (currency=None, events=[]) instead of a 404.
+    """
+
+    currency: Optional[str] = None
+    events: List[TradeEvent] = []

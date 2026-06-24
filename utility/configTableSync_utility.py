@@ -28,7 +28,7 @@ from typing import Optional
 import asyncpg
 from ruamel.yaml import YAML
 
-from utility.loadConfig_utility import load_config_from_yaml, fetch_cs2_item_name_ids
+from utility.loadConfig_utility import load_config_from_yaml, look_up_item_nameid
 
 # Round-trip YAML for writeback: preserves the human-maintained comments,
 # key order, and quoting in config.yaml instead of flattening them away.
@@ -79,8 +79,11 @@ def resolve_item_nameid(market_hash_name: str) -> Optional[int]:
     histogram/activity streams cannot make a valid API call without this id, so
     the reconcile/sync paths must fill it before starting a poller. Returns None
     when the name isn't in the id map (caller rejects that item with a reason).
+
+    Delegates to look_up_item_nameid, which refreshes the cache on a miss so a
+    newly released item (absent from a stale cache) still resolves.
     """
-    return fetch_cs2_item_name_ids().get(market_hash_name)
+    return look_up_item_nameid(market_hash_name)
 
 
 def build_desired_rows_from_config(config: dict) -> list[dict]:

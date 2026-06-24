@@ -56,6 +56,16 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
 ]
 
+# Cold-start population sizes, fixed per stream (no client window params this
+# pass — see the GET docstrings). Overview = live chart tip; activity = enough
+# tape to read.
+OVERVIEW_LIMIT = 200
+ACTIVITY_TAIL = 50
+
+# Maps a tracked stream to the GET shape that serves it, so POST/PATCH can call
+# the SAME shared read the standalone GET uses (one read per stream, no dupes).
+STREAM_TO_READER = {}  # populated below, once the reader fns are defined
+
 # range= param -> SQL interval. "all" means no lower bound.
 HISTORY_RANGES = {
     "week": "7 days",
@@ -99,6 +109,126 @@ def parse_price_to_float(value) -> Optional[float]:
         return float(str(value).replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Shared reads — the single read function per live stream.
+#
+# Each returns the response model for cold-start card population, ALWAYS shaped
+# identically whether the DB is empty, partial, or full: an empty payload (no
+# points/events, null currency) when nothing is stored yet, never an error.
+# These are the SAME callables the GET endpoints, POST, and PATCH all invoke —
+# one read per stream, no duplicated SQL (same discipline as compute_feasibility).
+# The 200-empty vs 404 decision is NOT made here; it lives in the GET wrapper,
+# which only 404s when the item also isn't in the tracked set.
+# ---------------------------------------------------------------------------
+
+
+async def read_recent_overview(conn, name: str) -> OverviewResponse:
+    """Recent intraday priceoverview series (newest first), sized for the live
+    chart tip. Empty payload when the item has no overview rows yet."""
+    rows = await conn.fetch(
+        """
+        SELECT timestamp, currency, lowest_price, median_price, volume
+        FROM price_overview
+        WHERE market_hash_name = $1
+        ORDER BY timestamp DESC
+        LIMIT $2
+        """,
+        name,
+        OVERVIEW_LIMIT,
+    )
+    if not rows:
+        return OverviewResponse()
+    points = [dict(r) for r in rows]
+    return OverviewResponse(currency=points[0]["currency"], points=points)
+
+
+async def read_latest_orderbook(conn, name: str) -> BookSnapshot:
+    """Single most-recent order-book histogram snapshot. Empty payload (only the
+    name filled, everything else null) when no snapshot exists yet.
+
+    The JSONB order tables/graphs come back as native structured arrays via the
+    connection's JSONB codec — passed through unchanged.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT market_hash_name, timestamp, currency,
+               buy_order_table, sell_order_table,
+               buy_order_graph, sell_order_graph,
+               buy_order_count, sell_order_count,
+               highest_buy_order, lowest_sell_order
+        FROM orders_histogram
+        WHERE market_hash_name = $1
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+        name,
+    )
+    if row is None:
+        return BookSnapshot(market_hash_name=name)
+    return BookSnapshot(**dict(row))
+
+
+async def read_recent_activity(conn, name: str) -> ActivityResponse:
+    """Recent tail of trades from the latest activity snapshot (last
+    ACTIVITY_TAIL events), enough to read the tape. Empty payload when no
+    snapshot exists yet."""
+    row = await conn.fetchrow(
+        """
+        SELECT currency, parsed_activities
+        FROM orders_activity
+        WHERE market_hash_name = $1
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+        name,
+    )
+    if row is None:
+        return ActivityResponse()
+    parsed = (row["parsed_activities"] or [])[-ACTIVITY_TAIL:]
+    events = [
+        TradeEvent(
+            timestamp=e.get("timestamp"),
+            currency=e.get("currency") or row["currency"],
+            action=e.get("action"),
+            price=parse_price_to_float(e.get("price")),
+        )
+        for e in parsed
+    ]
+    return ActivityResponse(currency=row["currency"], events=events)
+
+
+# Wire each live stream to its single reader. POST/PATCH look the item's stream
+# up here so they return current data via the exact same callable the GET uses.
+STREAM_TO_READER.update({
+    "priceoverview": read_recent_overview,
+    "histogram": read_latest_orderbook,
+    "activity": read_recent_activity,
+})
+
+
+async def is_item_tracked(conn, name: str) -> bool:
+    """True if the name is in the enabled tracked set (any stream).
+
+    The load-bearing seam: a live GET that finds no data uses this to tell
+    'tracked, still collecting' (-> 200 empty) from 'not tracked at all'
+    (-> 404). Data tables alone can't make that call — emptiness looks the same
+    either way until you consult the tracked set.
+    """
+    return await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM tracked_items WHERE market_hash_name = $1 AND enabled = TRUE)",
+        name,
+    )
+
+
+async def read_current_for_stream(conn, name: str, stream: str):
+    """Dispatch to the one reader for `stream` — the shared read POST/PATCH embed
+    in their response so the frontend seeds its cache without a round-trip."""
+    reader = STREAM_TO_READER.get(stream)
+    if reader is None:
+        return None  # e.g. pricehistory: archival, no live cold-start read
+    return await reader(conn, name)
 
 
 @app.get("/items", response_model=list[TrackedItem])
@@ -177,28 +307,18 @@ async def get_operational_meta():
 
 
 @app.get("/overview/{name}", response_model=OverviewResponse)
-async def get_recent_overview(
-    name: str,
-    limit: int = Query(50, ge=1, le=1000),
-):
-    """Return the most recent priceoverview snapshots for an item."""
-    async with holder.pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT timestamp, currency, lowest_price, median_price, volume
-            FROM price_overview
-            WHERE market_hash_name = $1
-            ORDER BY timestamp DESC
-            LIMIT $2
-            """,
-            name,
-            limit,
-        )
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"No price overview data for '{name}'")
+async def get_recent_overview(name: str):
+    """Recent intraday priceoverview series for the live chart tip.
 
-    points = [dict(r) for r in rows]
-    return OverviewResponse(currency=points[0]["currency"], points=points)
+    Tracked-but-empty -> 200 empty payload; untracked -> 404. Fixed size
+    (OVERVIEW_LIMIT), no window params — the client zooms within the fetched
+    bucket.
+    """
+    async with holder.pool.acquire() as conn:
+        result = await read_recent_overview(conn, name)
+        if not result.points and not await is_item_tracked(conn, name):
+            raise HTTPException(status_code=404, detail=f"'{name}' is not tracked")
+    return result
 
 
 @app.get("/history/{name}", response_model=HistoryResponse)
@@ -248,59 +368,29 @@ async def get_price_history(
 
 @app.get("/orderbook/{name}", response_model=BookSnapshot)
 async def get_latest_orderbook(name: str):
-    """Return the latest order-book histogram snapshot for an item.
+    """Single most-recent order-book snapshot for an item.
 
-    The JSONB order tables/graphs come back as native structured arrays via
-    the connection's JSONB codec — they are passed through unchanged.
+    Tracked-but-empty -> 200 empty payload (name filled, rest null);
+    untracked -> 404.
     """
     async with holder.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT market_hash_name, timestamp, currency,
-                   buy_order_table, sell_order_table,
-                   buy_order_graph, sell_order_graph,
-                   buy_order_count, sell_order_count,
-                   highest_buy_order, lowest_sell_order
-            FROM orders_histogram
-            WHERE market_hash_name = $1
-            ORDER BY timestamp DESC
-            LIMIT 1
-            """,
-            name,
-        )
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"No order book data for '{name}'")
-    return BookSnapshot(**dict(row))
+        result = await read_latest_orderbook(conn, name)
+        if result.timestamp is None and not await is_item_tracked(conn, name):
+            raise HTTPException(status_code=404, detail=f"'{name}' is not tracked")
+    return result
 
 
 @app.get("/activity/{name}", response_model=ActivityResponse)
 async def get_latest_activity(name: str):
-    """Return the latest parsed trade activity for an item."""
-    async with holder.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT currency, parsed_activities
-            FROM orders_activity
-            WHERE market_hash_name = $1
-            ORDER BY timestamp DESC
-            LIMIT 1
-            """,
-            name,
-        )
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"No activity data for '{name}'")
+    """Recent tail of trades for an item, enough to read the tape.
 
-    parsed = row["parsed_activities"] or []
-    events = [
-        TradeEvent(
-            timestamp=e.get("timestamp"),
-            currency=e.get("currency") or row["currency"],
-            action=e.get("action"),
-            price=parse_price_to_float(e.get("price")),
-        )
-        for e in parsed
-    ]
-    return ActivityResponse(currency=row["currency"], events=events)
+    Tracked-but-empty -> 200 empty payload; untracked -> 404.
+    """
+    async with holder.pool.acquire() as conn:
+        result = await read_recent_activity(conn, name)
+        if not result.events and not await is_item_tracked(conn, name):
+            raise HTTPException(status_code=404, detail=f"'{name}' is not tracked")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +438,43 @@ async def fetch_enabled_intervals(conn, exclude_id: Optional[int] = None) -> lis
             exclude_id,
         )
     return [r["poll_interval_sec"] for r in rows]
+
+
+async def resolve_target_row(conn, market_hash_name: str, stream: Optional[str]):
+    """Find the single tracked_items row a write targets by its real unique key.
+
+    (market_hash_name, stream) is the unique key — an item can be tracked on
+    several streams, so name alone can be ambiguous. The internal autoincrement
+    id is never accepted from callers; it stays a DB detail. The returned row
+    still carries `id` for internal SQL, but nothing exposes it.
+
+    - stream given: target that exact pair; 404 if it doesn't exist.
+    - stream omitted: resolve by name; 404 if no row, 409 if more than one
+      (caller must specify stream to disambiguate).
+    """
+    if stream is not None:
+        row = await conn.fetchrow(
+            "SELECT * FROM tracked_items WHERE market_hash_name = $1 AND stream = $2",
+            market_hash_name, stream,
+        )
+        if row is None:
+            reject_and_log(404, f"No tracked item '{market_hash_name}' on stream '{stream}'")
+        return row
+
+    rows = await conn.fetch(
+        "SELECT * FROM tracked_items WHERE market_hash_name = $1 ORDER BY stream",
+        market_hash_name,
+    )
+    if not rows:
+        reject_and_log(404, f"No tracked item '{market_hash_name}'")
+    if len(rows) > 1:
+        streams = ", ".join(r["stream"] for r in rows)
+        reject_and_log(
+            409,
+            f"'{market_hash_name}' is tracked on multiple streams ({streams}); "
+            f"specify stream to target one.",
+        )
+    return rows[0]
 
 
 async def mirror_config_after_write() -> None:
@@ -448,33 +575,40 @@ async def add_tracked_item(item: TrackedItemCreate):
             item.currency, item.country, item.language, item.poll_interval_sec,
         )
 
+        # Seed current data via the SAME reader the GET uses (pre-existing data
+        # available at write time — usually empty on a fresh add, no poll wait).
+        data = await read_current_for_stream(conn, item.market_hash_name, item.stream)
+
     await mirror_config_after_write()
     print(f"  ✓ tracking id={row['id']} ({total} req/{window}s, {util:.1f}% capacity) — "
           f"reconcile chain will start the poller")
     return TrackingAck(
         status="tracking",
-        id=row["id"],
         market_hash_name=item.market_hash_name,
         stream=item.stream,
         note="collecting first data",
+        data=data,
     )
 
 
-@app.patch("/tracked-items/{item_id}", response_model=TrackingAck)
-async def modify_tracked_item(item_id: int, patch: TrackedItemPatch):
+@app.patch("/tracked-items", response_model=TrackingAck)
+async def modify_tracked_item(patch: TrackedItemPatch):
     """Modify one item's poll_interval_sec, stream, or enabled.
+
+    The row is targeted by its real unique key (market_hash_name + stream), never
+    the internal id. `new_stream` moves the row to a different stream.
 
     Feasibility is re-checked ONLY when the change increases load (interval
     decrease, or enabling a disabled row). Load-decreasing changes (interval
     increase, disabling) can't fail feasibility, so the check is skipped.
     """
-    print(f"\n📥 PATCH /tracked-items/{item_id}: "
-          f"interval={patch.poll_interval_sec} stream={patch.stream} enabled={patch.enabled}")
+    print(f"\n📥 PATCH /tracked-items: '{patch.market_hash_name}' (stream={patch.stream}) "
+          f"-> interval={patch.poll_interval_sec} new_stream={patch.new_stream} enabled={patch.enabled}")
 
-    if patch.poll_interval_sec is None and patch.stream is None and patch.enabled is None:
-        reject_and_log(400, "Nothing to update: provide poll_interval_sec, stream, or enabled")
-    if patch.stream is not None and patch.stream not in VALID_STREAMS:
-        reject_and_log(400, f"Invalid stream '{patch.stream}'. Use one of: {', '.join(VALID_STREAMS)}")
+    if patch.poll_interval_sec is None and patch.new_stream is None and patch.enabled is None:
+        reject_and_log(400, "Nothing to update: provide poll_interval_sec, new_stream, or enabled")
+    if patch.new_stream is not None and patch.new_stream not in VALID_STREAMS:
+        reject_and_log(400, f"Invalid stream '{patch.new_stream}'. Use one of: {', '.join(VALID_STREAMS)}")
     if patch.poll_interval_sec is not None and not (
         MIN_POLL_INTERVAL_SEC <= patch.poll_interval_sec <= MAX_POLL_INTERVAL_SEC
     ):
@@ -485,11 +619,10 @@ async def modify_tracked_item(item_id: int, patch: TrackedItemPatch):
         )
 
     async with holder.pool.acquire() as conn:
-        cur = await conn.fetchrow("SELECT * FROM tracked_items WHERE id = $1", item_id)
-        if cur is None:
-            reject_and_log(404, f"No tracked item with id {item_id}")
+        cur = await resolve_target_row(conn, patch.market_hash_name, patch.stream)
+        item_id = cur["id"]
 
-        new_stream = patch.stream if patch.stream is not None else cur["stream"]
+        new_stream = patch.new_stream if patch.new_stream is not None else cur["stream"]
         new_interval = patch.poll_interval_sec if patch.poll_interval_sec is not None else cur["poll_interval_sec"]
         new_enabled = patch.enabled if patch.enabled is not None else cur["enabled"]
 
@@ -531,40 +664,48 @@ async def modify_tracked_item(item_id: int, patch: TrackedItemPatch):
             new_interval, new_stream, new_enabled, new_nameid, item_id,
         )
 
+        # Seed current data via the SAME reader the GET uses, keyed on the row's
+        # (possibly new) stream — pre-existing data at write time, no poll wait.
+        data = await read_current_for_stream(conn, cur["market_hash_name"], new_stream)
+
     await mirror_config_after_write()
     print(f"  ✓ updated id={item_id}: '{cur['market_hash_name']}' | {new_stream} | "
           f"every {new_interval}s | enabled={new_enabled} — reconcile chain applies it")
     return TrackingAck(
         status="updated",
-        id=item_id,
         market_hash_name=cur["market_hash_name"],
         stream=new_stream,
         note="reconciling live" if new_enabled else "disabled",
+        data=data,
     )
 
 
-@app.delete("/tracked-items/{item_id}", response_model=TrackingAck)
-async def remove_tracked_item(item_id: int):
+@app.delete("/tracked-items", response_model=TrackingAck)
+async def remove_tracked_item(
+    market_hash_name: str = Query(..., description="Item to stop tracking"),
+    stream: Optional[str] = Query(
+        None, description="Stream to target; required when the name is tracked on more than one"
+    ),
+):
     """Remove one item by disabling it (enabled=FALSE).
+
+    Targeted by its real unique key (market_hash_name + stream), never the
+    internal id. stream is optional only so an ambiguous name (tracked on several
+    streams) gets a clear 409 asking for it.
 
     Disable, not hard-delete: it preserves the row (and its tracking history)
     and is the safer default. Only frees budget, so no feasibility check.
     """
-    print(f"\n📥 DELETE /tracked-items/{item_id}")
+    print(f"\n📥 DELETE /tracked-items: '{market_hash_name}' (stream={stream})")
     async with holder.pool.acquire() as conn:
-        cur = await conn.fetchrow(
-            "SELECT market_hash_name, stream, enabled FROM tracked_items WHERE id = $1", item_id
-        )
-        if cur is None:
-            reject_and_log(404, f"No tracked item with id {item_id}")
-        await conn.execute("UPDATE tracked_items SET enabled = FALSE WHERE id = $1", item_id)
+        cur = await resolve_target_row(conn, market_hash_name, stream)
+        await conn.execute("UPDATE tracked_items SET enabled = FALSE WHERE id = $1", cur["id"])
 
     await mirror_config_after_write()
-    print(f"  ✓ disabled id={item_id}: '{cur['market_hash_name']}' ({cur['stream']}) — "
+    print(f"  ✓ disabled '{cur['market_hash_name']}' ({cur['stream']}) — "
           f"poller stops on reconcile")
     return TrackingAck(
         status="disabled",
-        id=item_id,
         market_hash_name=cur["market_hash_name"],
         stream=cur["stream"],
         note="poller stops on reconcile",
