@@ -8,27 +8,20 @@ LIMITS:
 
 # ITEMS
 TRACKING_ITEMS:
-- market_hash_name: AK-47 | Neo-Noir (Factory New)
-  appid: 730
-  currency: 1
-  country: IN
-  language: english
-  polling-interval-in-seconds: 60
-  api_id: priceoverview
 - market_hash_name: AK-47 | Redline (Field-Tested)
   appid: 730
   currency: 1
   country: US
   language: english
-  polling-interval-in-seconds: 60
-  api_id: itemordershistogram
+  polling-interval-in-seconds: 3600
+  api_id: pricehistory
   item_nameid: 7178002
-- market_hash_name: AWP | Dragon Lore (Field-Tested)
+- market_hash_name: AWP | Redline (Field-Tested)
   appid: 730
   currency: 1
   country: US
   language: english
-  polling-interval-in-seconds: 100
+  polling-interval-in-seconds: 30
   api_id: priceoverview
 - market_hash_name: Dreams & Nightmares Case
   appid: 730

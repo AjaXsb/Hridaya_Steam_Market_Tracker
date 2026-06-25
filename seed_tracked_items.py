@@ -20,12 +20,14 @@ from dotenv import load_dotenv
 
 from utility.loadConfig_utility import load_config_from_yaml
 
-# config api_id  ->  tracked_items.stream. price history is a bulk archival job,
-# not a live stream, so it is intentionally excluded from tracked_items.
+# config api_id  ->  tracked_items.stream. All four streams live in tracked_items;
+# pricehistory is the hourly-archival one (clockwork), the other three are live
+# snapshot pollers (snoozer).
 API_ID_TO_STREAM = {
     "priceoverview": "priceoverview",
     "itemordershistogram": "histogram",
     "itemordersactivity": "activity",
+    "pricehistory": "pricehistory",
 }
 
 CREATE_TABLE_SQL = """
@@ -47,12 +49,12 @@ CREATE TABLE IF NOT EXISTS tracked_items (
 
 
 def build_rows_from_config(config: dict) -> list[dict]:
-    """Turn config TRACKING_ITEMS into tracked_items rows (skipping pricehistory)."""
+    """Turn config TRACKING_ITEMS into tracked_items rows."""
     rows = []
     for item in config["TRACKING_ITEMS"]:
         stream = API_ID_TO_STREAM.get(item["api_id"])
         if stream is None:
-            # pricehistory or anything non-live — not part of the tracked set
+            # unknown api_id — not a tracked stream
             continue
         rows.append(
             {

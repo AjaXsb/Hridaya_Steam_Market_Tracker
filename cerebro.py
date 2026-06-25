@@ -68,6 +68,10 @@ class Orchestrator:
         self._reconcile_event = asyncio.Event()
         self._pending_notifies = 0
         self._reconcile_worker_task: Optional[asyncio.Task] = None
+        # Detached first-fetch tasks for newly-added pricehistory items. Held in a
+        # set so they aren't garbage-collected mid-flight; each removes itself on
+        # completion (asyncio keeps only weak references to running tasks).
+        self._immediate_history_tasks: set[asyncio.Task] = set()
 
     def load_config(self):
         """Load config.yaml for the global rate budget (LIMITS) and any
@@ -174,7 +178,14 @@ class Orchestrator:
             window_seconds: Time window in seconds
             items: List of tracking items with their configs
         """
-        intervals = [item['polling-interval-in-seconds'] for item in items]
+        # pricehistory is hourly archival, not sustained polling — clockwork runs
+        # it on a fixed :30 tick regardless of poll_interval_sec, so it adds no
+        # steady budget pressure and is excluded from the sustained-load gate
+        # (see validate_tracked_items' rationale).
+        intervals = [
+            item['polling-interval-in-seconds']
+            for item in items if item['api_id'] != 'pricehistory'
+        ]
         ok, total_reqs, utilization = compute_feasibility(rate_limit, window_seconds, intervals)
 
         if not ok:
@@ -223,17 +234,15 @@ class Orchestrator:
         print("  ✓ Database: Postgres/Timescale (CS2_PG_DSN)")
         self.timescale_dsn = timescale_dsn
 
-        # Live items now come from the tracked_items table (loaded at startup in
-        # run()), NOT config.yaml. The table is the single source of truth for
-        # what's tracked and how. Startup-read only — no runtime hot-reload this
-        # pass. History (pricehistory) is a separate bulk archival job and is
-        # intentionally not part of tracked_items.
-        live_items = self.tracked_items
-        history_items = [
-            item for item in self.config['TRACKING_ITEMS']
-            if item['api_id'] == 'pricehistory'
-        ]
-        print(f"  ✓ Sourced {len(live_items)} live item(s) from tracked_items table")
+        # Both item sets now come from the tracked_items table (loaded at startup
+        # in run()), the single source of truth. The stream decides which
+        # scheduler dispatches it: pricehistory -> clockwork (hourly archival),
+        # everything else -> snoozer (live snapshot polling). This split is the
+        # only place the four streams diverge.
+        live_items = [i for i in self.tracked_items if i['api_id'] != 'pricehistory']
+        history_items = [i for i in self.tracked_items if i['api_id'] == 'pricehistory']
+        print(f"  ✓ Sourced {len(live_items)} live + {len(history_items)} archival item(s) "
+              f"from tracked_items table")
 
         # Always create the live scheduler, even with an empty set: it must exist
         # so a runtime-added item (config edit or SQL write -> NOTIFY -> reconcile)
@@ -246,13 +255,15 @@ class Orchestrator:
         )
         print(f"  ✓ Started HIGH frequency tracking on ({len(live_items)} items)")
 
-        if history_items:
-            self.clockworkScheduler = ClockworkScheduler(
-                items=history_items,
-                rate_limiter=self.rate_limiter,
-                timescale_dsn=self.timescale_dsn
-            )
-            print(f"  ✓ Started ARCHIVAL work + all known historical snapshots available right now on ({len(history_items)} items)")
+        # Always create the archival scheduler too, for the same reason: a
+        # runtime-added pricehistory item must have a clockwork set to grow into
+        # without a restart. Empty-set hourly loop just idles.
+        self.clockworkScheduler = ClockworkScheduler(
+            items=history_items,
+            rate_limiter=self.rate_limiter,
+            timescale_dsn=self.timescale_dsn
+        )
+        print(f"  ✓ Started ARCHIVAL work + all known historical snapshots available right now on ({len(history_items)} items)")
 
     def setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
@@ -343,9 +354,14 @@ class Orchestrator:
             usable.append(item)
 
         # --- feasibility gate (mandatory before applying) ---
+        # Only live streams count toward the sustained-load budget; pricehistory
+        # is hourly archival and excluded (same rule as boot validation).
         rate_limit = self.config['LIMITS']['REQUESTS']
         window_seconds = self.config['LIMITS']['WINDOW_SECONDS']
-        intervals = [item['polling-interval-in-seconds'] for item in usable]
+        intervals = [
+            item['polling-interval-in-seconds']
+            for item in usable if item['api_id'] != 'pricehistory'
+        ]
         ok, total_reqs, utilization = compute_feasibility(rate_limit, window_seconds, intervals)
         if not ok:
             print(f"\n🔔 tracked_items changed ({absorbed_notifies} signal(s)) — reconciling")
@@ -353,19 +369,43 @@ class Orchestrator:
                   f"exceeds budget {rate_limit}. Keeping current pollers unchanged.")
             return
 
-        # --- apply: reconcile the live poller set, no restart ---
-        summary = self.snoozerScheduler.reconcile_live_set(usable)
+        # --- apply: reconcile both poller sets, no restart ---
+        # Split by stream and hand each scheduler its own desired set. The live
+        # set drives the rate budget; the archival set rides clockwork's fixed
+        # hourly tick. Newly-added archival items are fetched immediately so the
+        # user doesn't wait up to an hour for the first series.
+        live = [item for item in usable if item['api_id'] != 'pricehistory']
+        history = [item for item in usable if item['api_id'] == 'pricehistory']
+        summary = self.snoozerScheduler.reconcile_live_set(live)
+        hist = self.clockworkScheduler.reconcile_history_set(history)
+        # Fire the new archival items' first fetch in the background, NOT inline:
+        # _fetch_item_with_retry can back off for minutes on failure, and awaiting
+        # it here would stall the reconcile worker (and coalescing) that whole
+        # time. Detached, it behaves like snoozer firing a new item on its own.
+        if hist['added_items']:
+            task = asyncio.create_task(
+                self.clockworkScheduler.fetch_items_now(hist['added_items']),
+                name="immediate-history-fetch",
+            )
+            self._immediate_history_tasks.add(task)
+            task.add_done_callback(self._immediate_history_tasks.discard)
+
         # Stay quiet on a pure no-op (e.g. a coalesced burst that netted no
         # structural change); only announce real add/remove churn.
-        if summary['added'] or summary['removed']:
+        churned = summary['added'] or summary['removed'] or hist['added'] or hist['removed']
+        if churned:
             print(f"\n🔔 tracked_items changed ({absorbed_notifies} signal(s) coalesced) — reconciled "
                   f"({total_reqs} req/{window_seconds}s, {utilization:.1f}% capacity): "
-                  f"+{len(summary['added'])} added, -{len(summary['removed'])} removed, "
-                  f"{summary['total']} live")
+                  f"live +{len(summary['added'])}/-{len(summary['removed'])} ({summary['total']} live), "
+                  f"archival +{len(hist['added'])}/-{len(hist['removed'])} ({hist['total']} archival)")
             if summary['added']:
-                print(f"      added:   {summary['added']}")
+                print(f"      live added:      {summary['added']}")
             if summary['removed']:
-                print(f"      removed: {summary['removed']}")
+                print(f"      live removed:    {summary['removed']}")
+            if hist['added']:
+                print(f"      archival added:  {hist['added']}")
+            if hist['removed']:
+                print(f"      archival removed: {hist['removed']}")
 
     async def run(self):
         """

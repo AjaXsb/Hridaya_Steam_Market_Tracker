@@ -35,13 +35,15 @@ from utility.loadConfig_utility import load_config_from_yaml, look_up_item_namei
 _yaml_rt = YAML()
 _yaml_rt.preserve_quotes = True
 
-# config api_id <-> tracked_items.stream. pricehistory is a bulk archival job,
-# not a live stream, so it is intentionally excluded from tracked_items (matches
-# seed_tracked_items.API_ID_TO_STREAM and loadTrackedItems STREAM_TO_API_ID).
+# config api_id <-> tracked_items.stream. All four streams live in tracked_items;
+# pricehistory is the hourly-archival one (clockwork dispatches it) while the
+# other three are live snapshot pollers (snoozer). The mapping is 1:1 except the
+# two order streams whose api_id differs from the stream label.
 API_ID_TO_STREAM = {
     "priceoverview": "priceoverview",
     "itemordershistogram": "histogram",
     "itemordersactivity": "activity",
+    "pricehistory": "pricehistory",
 }
 STREAM_TO_API_ID = {v: k for k, v in API_ID_TO_STREAM.items()}
 
@@ -96,7 +98,7 @@ def build_desired_rows_from_config(config: dict) -> list[dict]:
     for item in config.get("TRACKING_ITEMS", []):
         stream = API_ID_TO_STREAM.get(item["api_id"])
         if stream is None:
-            continue  # pricehistory / non-live — not part of the tracked set
+            continue  # unknown api_id — not a tracked stream
         rows.append(
             {
                 "market_hash_name": item["market_hash_name"],

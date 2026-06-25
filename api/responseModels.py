@@ -16,13 +16,21 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, field_serializer
 
-# The three live streams the table accepts. pricehistory is archival, not a
-# live poller, so it is intentionally not addable through these endpoints.
-VALID_STREAMS = ("priceoverview", "histogram", "activity")
+# The four streams the table accepts. priceoverview/histogram/activity are
+# live snapshot pollers (snoozer); pricehistory is hourly archival (clockwork).
+# All four are addable through these endpoints — the scheduler split is an
+# internal dispatch detail, not a user-visible distinction.
+VALID_STREAMS = ("priceoverview", "histogram", "activity", "pricehistory")
 # Sane poll cadence bounds (seconds). Floor keeps a single item from blowing the
 # budget on its own; ceiling stops typos like 99999999 sneaking in.
 MIN_POLL_INTERVAL_SEC = 5
 MAX_POLL_INTERVAL_SEC = 86_400
+
+# pricehistory has no per-item cadence: clockwork runs it on a fixed :30 hourly
+# tick regardless of this value. The client doesn't supply one; the endpoints
+# stamp this canonical value so the NOT NULL column has an honest entry (3600 =
+# the hour it actually runs on) and writeback to config stays meaningful.
+PRICEHISTORY_POLL_SEC = 3600
 
 
 class TrackedItemCreate(BaseModel):
@@ -42,7 +50,9 @@ class TrackedItemCreate(BaseModel):
     appid: int
     stream: str
     currency: int = 1
-    poll_interval_sec: int
+    # Optional: required for live streams, ignored for pricehistory (fixed hourly
+    # cadence). The endpoint enforces presence for live streams with a clear 400.
+    poll_interval_sec: Optional[int] = None
     country: str = "US"
     language: str = "english"
 
@@ -151,10 +161,15 @@ class HistoryPoint(BaseModel):
 
 
 class HistoryResponse(BaseModel):
-    """Range-bounded price history for one item."""
+    """Range-bounded price history for one item.
 
-    currency: str
-    points: List[HistoryPoint]
+    currency is Optional so a tracked-but-empty item can return a 200 with an
+    empty payload (currency=None, points=[]) instead of a 404, matching the
+    other live read endpoints.
+    """
+
+    currency: Optional[str] = None
+    points: List[HistoryPoint] = []
 
 
 class BookSnapshot(BaseModel):

@@ -27,6 +27,7 @@ from api.responseModels import (
     MIN_POLL_INTERVAL_SEC,
     MetaResponse,
     OverviewResponse,
+    PRICEHISTORY_POLL_SEC,
     RateLimitState,
     TrackedItem,
     TrackedItemCreate,
@@ -199,12 +200,38 @@ async def read_recent_activity(conn, name: str) -> ActivityResponse:
     return ActivityResponse(currency=row["currency"], events=events)
 
 
-# Wire each live stream to its single reader. POST/PATCH look the item's stream
-# up here so they return current data via the exact same callable the GET uses.
+async def read_recent_history(conn, name: str):
+    """Full stored price-history series for an item (oldest first), the archival
+    parallel to the live readers. Returns None when no history rows exist yet —
+    HistoryResponse requires a currency, so an empty payload can't be shaped; a
+    fresh add just seeds nothing and the first hourly fetch fills it in.
+
+    Unlike the GET /history endpoint this is unbounded (no range param): it seeds
+    the frontend cache with everything on hand at write time, same spirit as the
+    other readers returning their full cold-start payload.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT time AS timestamp, currency, price, volume
+        FROM price_history
+        WHERE market_hash_name = $1
+        ORDER BY time ASC
+        """,
+        name,
+    )
+    if not rows:
+        return None
+    points = [dict(r) for r in rows]
+    return HistoryResponse(currency=points[0]["currency"], points=points)
+
+
+# Wire each stream to its single reader. POST/PATCH look the item's stream up
+# here so they return current data via the exact same callable the GET uses.
 STREAM_TO_READER.update({
     "priceoverview": read_recent_overview,
     "histogram": read_latest_orderbook,
     "activity": read_recent_activity,
+    "pricehistory": read_recent_history,
 })
 
 
@@ -227,7 +254,7 @@ async def read_current_for_stream(conn, name: str, stream: str):
     in their response so the frontend seeds its cache without a round-trip."""
     reader = STREAM_TO_READER.get(stream)
     if reader is None:
-        return None  # e.g. pricehistory: archival, no live cold-start read
+        return None  # unknown stream: no seed
     return await reader(conn, name)
 
 
@@ -326,7 +353,12 @@ async def get_price_history(
     name: str,
     range: str = Query("month"),
 ):
-    """Return price history for an item, bounded by the requested range."""
+    """Return price history for an item, bounded by the requested range.
+
+    Tracked-but-empty -> 200 empty payload (currency=None, points=[]); untracked
+    -> 404. Same 200-empty-vs-404 discipline as the live read endpoints, so a
+    freshly added item still collecting reads as 200 empty rather than 404.
+    """
     if range not in HISTORY_RANGES:
         raise HTTPException(
             status_code=400,
@@ -359,8 +391,12 @@ async def get_price_history(
                 """,
                 name,
             )
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"No price history for '{name}'")
+        if not rows:
+            # Empty: distinguish 'tracked, still collecting' (200 empty) from
+            # 'not tracked at all' (404) — same seam as the live GETs.
+            if not await is_item_tracked(conn, name):
+                raise HTTPException(status_code=404, detail=f"'{name}' is not tracked")
+            return HistoryResponse()
 
     points = [dict(r) for r in rows]
     return HistoryResponse(currency=points[0]["currency"], points=points)
@@ -428,13 +464,21 @@ def read_rate_budget() -> tuple[int, int]:
 
 
 async def fetch_enabled_intervals(conn, exclude_id: Optional[int] = None) -> list[int]:
-    """Poll intervals of the currently enabled set, optionally excluding one row
-    (so a PATCH measures the set WITHOUT the row it's about to change)."""
+    """Poll intervals of the currently enabled LIVE set, optionally excluding one
+    row (so a PATCH measures the set WITHOUT the row it's about to change).
+
+    pricehistory rows are excluded: clockwork runs them on a fixed hourly tick
+    regardless of poll_interval_sec, so they add no sustained load and must not
+    count toward the budget (mirrors cerebro's feasibility exclusion)."""
     if exclude_id is None:
-        rows = await conn.fetch("SELECT poll_interval_sec FROM tracked_items WHERE enabled = TRUE")
+        rows = await conn.fetch(
+            "SELECT poll_interval_sec FROM tracked_items "
+            "WHERE enabled = TRUE AND stream <> 'pricehistory'"
+        )
     else:
         rows = await conn.fetch(
-            "SELECT poll_interval_sec FROM tracked_items WHERE enabled = TRUE AND id <> $1",
+            "SELECT poll_interval_sec FROM tracked_items "
+            "WHERE enabled = TRUE AND stream <> 'pricehistory' AND id <> $1",
             exclude_id,
         )
     return [r["poll_interval_sec"] for r in rows]
@@ -502,9 +546,6 @@ async def add_tracked_item(item: TrackedItemCreate):
     first poll runs seconds later via the reconcile chain; it does NOT mean data
     exists yet.
     """
-    print(f"\n📥 POST /tracked-items: '{item.market_hash_name}' | {item.stream} | "
-          f"every {item.poll_interval_sec}s | cur={item.currency} country={item.country} appid={item.appid}")
-
     # --- validate (untrusted body) ---
     if item.stream not in VALID_STREAMS:
         reject_and_log(400, f"Invalid stream '{item.stream}'. Use one of: {', '.join(VALID_STREAMS)}")
@@ -514,12 +555,25 @@ async def add_tracked_item(item: TrackedItemCreate):
         reject_and_log(400, f"Invalid appid {item.appid} (must be positive; 730 = CS2)")
     if item.currency <= 0:
         reject_and_log(400, f"Invalid currency id {item.currency}")
-    if not (MIN_POLL_INTERVAL_SEC <= item.poll_interval_sec <= MAX_POLL_INTERVAL_SEC):
-        reject_and_log(
-            400,
-            f"poll_interval_sec {item.poll_interval_sec} out of bounds "
-            f"[{MIN_POLL_INTERVAL_SEC}, {MAX_POLL_INTERVAL_SEC}]",
-        )
+
+    # Resolve the cadence: pricehistory has none (fixed hourly tick), so any
+    # client value is ignored and the canonical hourly value is stamped. Live
+    # streams must supply an in-bounds interval.
+    if item.stream == "pricehistory":
+        poll_interval = PRICEHISTORY_POLL_SEC
+    else:
+        if item.poll_interval_sec is None:
+            reject_and_log(400, f"poll_interval_sec is required for the '{item.stream}' stream")
+        if not (MIN_POLL_INTERVAL_SEC <= item.poll_interval_sec <= MAX_POLL_INTERVAL_SEC):
+            reject_and_log(
+                400,
+                f"poll_interval_sec {item.poll_interval_sec} out of bounds "
+                f"[{MIN_POLL_INTERVAL_SEC}, {MAX_POLL_INTERVAL_SEC}]",
+            )
+        poll_interval = item.poll_interval_sec
+
+    print(f"\n📥 POST /tracked-items: '{item.market_hash_name}' | {item.stream} | "
+          f"every {poll_interval}s | cur={item.currency} country={item.country} appid={item.appid}")
 
     # --- resolve item_nameid for streams that need it ---
     item_nameid = None
@@ -544,9 +598,13 @@ async def add_tracked_item(item: TrackedItemCreate):
             reject_and_log(409, f"'{item.market_hash_name}' ({item.stream}) is already tracked")
 
         # --- feasibility pre-check BEFORE writing (POST adds load) ---
+        # A pricehistory add contributes no sustained load (clockwork runs it on
+        # a fixed hourly tick), so it isn't added to the budgeted intervals — it
+        # can't fail this gate, but we still run it for the capacity log line.
         rate_limit, window = read_rate_budget()
         intervals = await fetch_enabled_intervals(conn)  # disabled re-adds aren't in here yet
-        ok, total, util = compute_feasibility(rate_limit, window, intervals + [item.poll_interval_sec])
+        added_load = [] if item.stream == "pricehistory" else [poll_interval]
+        ok, total, util = compute_feasibility(rate_limit, window, intervals + added_load)
         if not ok:
             reject_and_log(
                 409,
@@ -572,7 +630,7 @@ async def add_tracked_item(item: TrackedItemCreate):
             RETURNING id
             """,
             item.market_hash_name, item.appid, item_nameid, item.stream,
-            item.currency, item.country, item.language, item.poll_interval_sec,
+            item.currency, item.country, item.language, poll_interval,
         )
 
         # Seed current data via the SAME reader the GET uses (pre-existing data
@@ -609,22 +667,30 @@ async def modify_tracked_item(patch: TrackedItemPatch):
         reject_and_log(400, "Nothing to update: provide poll_interval_sec, new_stream, or enabled")
     if patch.new_stream is not None and patch.new_stream not in VALID_STREAMS:
         reject_and_log(400, f"Invalid stream '{patch.new_stream}'. Use one of: {', '.join(VALID_STREAMS)}")
-    if patch.poll_interval_sec is not None and not (
-        MIN_POLL_INTERVAL_SEC <= patch.poll_interval_sec <= MAX_POLL_INTERVAL_SEC
-    ):
-        reject_and_log(
-            400,
-            f"poll_interval_sec {patch.poll_interval_sec} out of bounds "
-            f"[{MIN_POLL_INTERVAL_SEC}, {MAX_POLL_INTERVAL_SEC}]",
-        )
 
     async with holder.pool.acquire() as conn:
         cur = await resolve_target_row(conn, patch.market_hash_name, patch.stream)
         item_id = cur["id"]
 
         new_stream = patch.new_stream if patch.new_stream is not None else cur["stream"]
-        new_interval = patch.poll_interval_sec if patch.poll_interval_sec is not None else cur["poll_interval_sec"]
         new_enabled = patch.enabled if patch.enabled is not None else cur["enabled"]
+
+        # Resolve the cadence against the EFFECTIVE target stream: pricehistory
+        # has none (fixed hourly tick), so any supplied interval is ignored and
+        # the canonical hourly value is stamped. Live streams bounds-check a
+        # supplied interval; an omitted one keeps the current value.
+        if new_stream == "pricehistory":
+            new_interval = PRICEHISTORY_POLL_SEC
+        elif patch.poll_interval_sec is not None:
+            if not (MIN_POLL_INTERVAL_SEC <= patch.poll_interval_sec <= MAX_POLL_INTERVAL_SEC):
+                reject_and_log(
+                    400,
+                    f"poll_interval_sec {patch.poll_interval_sec} out of bounds "
+                    f"[{MIN_POLL_INTERVAL_SEC}, {MAX_POLL_INTERVAL_SEC}]",
+                )
+            new_interval = patch.poll_interval_sec
+        else:
+            new_interval = cur["poll_interval_sec"]
 
         # Resolve nameid if the (new) stream needs one and we don't have it.
         new_nameid = cur["item_nameid"]
@@ -641,10 +707,18 @@ async def modify_tracked_item(patch: TrackedItemPatch):
 
         # Load increases only if the row will be enabled AND its per-window
         # contribution goes up vs its current contribution (0 if currently
-        # disabled). Otherwise it frees budget -> skip the check.
+        # disabled). Otherwise it frees budget -> skip the check. pricehistory
+        # contributes 0 either way (fixed hourly tick, off the budget), so a
+        # move onto/off it is handled by these zero contributions.
         rate_limit, window = read_rate_budget()
-        old_contrib = (window // cur["poll_interval_sec"]) if cur["enabled"] else 0
-        new_contrib = (window // new_interval) if new_enabled else 0
+
+        def sustained_contribution(stream: str, interval: int, enabled: bool) -> int:
+            if not enabled or stream == "pricehistory":
+                return 0
+            return window // interval
+
+        old_contrib = sustained_contribution(cur["stream"], cur["poll_interval_sec"], cur["enabled"])
+        new_contrib = sustained_contribution(new_stream, new_interval, new_enabled)
         if new_contrib > old_contrib:
             intervals = await fetch_enabled_intervals(conn, exclude_id=item_id)
             ok, total, util = compute_feasibility(rate_limit, window, intervals + [new_interval])

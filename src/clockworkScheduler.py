@@ -70,6 +70,64 @@ class ClockworkScheduler:
 
         return history_items
 
+    def reconcile_history_set(self, new_items: List[dict]) -> dict:
+        """Swap the archival item set to a new desired set, live, no restart.
+
+        The clockwork mirror of snoozer.reconcile_live_set. This scheduler is a
+        single loop over self.history_items fired on the hourly tick (not one
+        task per item), so reconciling means atomically rebinding that list — the
+        sleeping run loop picks up the new list on its next tick.
+
+        Surviving items keep last_update (keyed by market_hash_name+api_id, the
+        UNIQUE table key). Brand-new items get last_update=None and are returned
+        in added_items so the caller can fetch them immediately rather than make
+        the user wait up to an hour for the next tick.
+
+        Returns a diff summary; added_items carries the new item dicts for the
+        immediate-fetch path.
+        """
+        prev = {(i['market_hash_name'], i['api_id']): i for i in self.history_items}
+        new_keys = {(i['market_hash_name'], i['api_id']) for i in new_items}
+
+        rebuilt = []
+        added_items = []
+        for item in new_items:
+            key = (item['market_hash_name'], item['api_id'])
+            old = prev.get(key)
+            if old is not None:
+                item['last_update'] = old.get('last_update')
+            else:
+                item['last_update'] = None  # brand new -> fetch asap
+                added_items.append(item)
+            rebuilt.append(item)
+
+        added = sorted(new_keys - prev.keys())
+        removed = sorted(prev.keys() - new_keys)
+
+        # Atomic rebind — the running loop sees the new list next tick.
+        self.history_items = rebuilt
+        return {
+            "added": added,
+            "removed": removed,
+            "total": len(rebuilt),
+            "added_items": added_items,
+        }
+
+    async def fetch_items_now(self, items: List[dict]) -> None:
+        """Fetch the given history items immediately (off the hourly schedule).
+
+        Used right after a reconcile so a newly-added pricehistory item gets its
+        full series seeded within seconds instead of waiting for the next :30
+        tick — the archival parallel to snoozer firing a new item at urgency=inf.
+        No-op until the steam client exists (run() sets it), so an item added
+        before clockwork's run() starts is simply caught by run_initial_fetch.
+        """
+        if not items or self.steam_client is None:
+            return
+        print(f"  ↪ immediate price-history fetch for {len(items)} new item(s)")
+        for item in items:
+            await self._fetch_item_with_retry(item)
+
     def get_next_execution_time(self) -> datetime:
         """
         Calculate the next execution time (:30 past the next hour).

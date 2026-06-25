@@ -17,6 +17,7 @@ STREAM_TO_API_ID = {
     "priceoverview": "priceoverview",
     "histogram": "itemordershistogram",
     "activity": "itemordersactivity",
+    "pricehistory": "pricehistory",
 }
 
 # Steam currency id -> ISO 4217 code, for display. Mirrors the ids the
