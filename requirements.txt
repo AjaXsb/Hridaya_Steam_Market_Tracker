@@ -28,3 +28,6 @@ ruamel.yaml==0.18.6
 # Visualization & analysis
 pandas
 plotly
+
+# WebSocket backend for uvicorn (live push: api/marketDataStream.py)
+websockets==16.0

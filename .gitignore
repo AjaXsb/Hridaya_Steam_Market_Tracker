@@ -43,3 +43,4 @@ miscellaneousNotes.txt
 # Postgres backups
 *.dump
 data/*.dump
+docs/

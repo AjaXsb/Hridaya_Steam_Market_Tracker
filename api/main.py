@@ -15,10 +15,15 @@ from typing import Optional
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.databasePool import holder, open_read_pool
+from api.marketDataStream import (
+    SubscriptionRegistry,
+    build_update_message,
+    listen_for_market_data,
+)
 from api.responseModels import (
     ActivityResponse,
     BookSnapshot,
@@ -76,13 +81,32 @@ HISTORY_RANGES = {
 }
 
 
+# Process-wide WebSocket subscription registry: (name, stream) -> sockets. The
+# NOTIFY listener consults it to route a fresh row to only the clients watching
+# that item+stream. read_ws_delta_for_stream is defined further down (after the
+# readers); the listener is spawned in lifespan, by which point it exists.
+ws_registry = SubscriptionRegistry()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Open the read-only pool once at startup, close it at shutdown."""
+    """Open the pool at startup, spawn the market-data NOTIFY listener, and tear
+    both down at shutdown.
+
+    The listener opens its OWN dedicated connection (asyncpg LISTEN can't share a
+    pool connection), held here so it closes cleanly on shutdown.
+    """
     holder.pool = await open_read_pool()
+    listen_conn = await listen_for_market_data(
+        os.getenv("CS2_PG_DSN"),
+        holder.pool,
+        ws_registry,
+        read_ws_delta_for_stream,
+    )
     try:
         yield
     finally:
+        await listen_conn.close()
         if holder.pool is not None:
             await holder.pool.close()
 
@@ -233,6 +257,79 @@ STREAM_TO_READER.update({
     "activity": read_recent_activity,
     "pricehistory": read_recent_history,
 })
+
+
+# ---------------------------------------------------------------------------
+# Latest-1 readers — the per-tick delta the WebSocket pushes.
+#
+# REST GETs serve the bulk cold-start series (200 overview pts, whole history).
+# A WS tick only needs the ONE freshly-written row: the frontend already holds
+# the series and appends. The append streams (overview/pricehistory) need a
+# single-point variant; histogram/activity are inherently latest-1 already, so
+# their bulk readers double as the WS readers (see STREAM_TO_WS_READER).
+# ---------------------------------------------------------------------------
+
+
+async def read_single_latest_overview(conn, name: str) -> OverviewResponse:
+    """Single newest priceoverview point — the WS delta the chart tip appends.
+
+    Same shape as read_recent_overview (OverviewResponse) but one point, so the
+    frontend parses a WS tick exactly like a REST point. Empty payload when no
+    rows yet."""
+    row = await conn.fetchrow(
+        """
+        SELECT timestamp, currency, lowest_price, median_price, volume
+        FROM price_overview
+        WHERE market_hash_name = $1
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+        name,
+    )
+    if row is None:
+        return OverviewResponse()
+    point = dict(row)
+    return OverviewResponse(currency=point["currency"], points=[point])
+
+
+async def read_single_latest_history_point(conn, name: str):
+    """Single newest price_history point — the WS delta appended to the archival
+    series. Returns None when no rows yet (HistoryResponse requires a currency,
+    same constraint as read_recent_history)."""
+    row = await conn.fetchrow(
+        """
+        SELECT time AS timestamp, currency, price, volume
+        FROM price_history
+        WHERE market_hash_name = $1
+        ORDER BY time DESC
+        LIMIT 1
+        """,
+        name,
+    )
+    if row is None:
+        return None
+    point = dict(row)
+    return HistoryResponse(currency=point["currency"], points=[point])
+
+
+# Per-stream WS reader: the latest-1 delta a NOTIFY re-reads and pushes. The
+# append streams use the single-point variants above; histogram/activity reuse
+# their bulk readers (already latest-1: one order book, one tape tail).
+STREAM_TO_WS_READER = {
+    "priceoverview": read_single_latest_overview,
+    "histogram": read_latest_orderbook,
+    "activity": read_recent_activity,
+    "pricehistory": read_single_latest_history_point,
+}
+
+
+async def read_ws_delta_for_stream(conn, name: str, stream: str):
+    """Dispatch to the latest-1 reader for `stream` — the delta the WS pushes on
+    a NOTIFY and on a fresh subscribe."""
+    reader = STREAM_TO_WS_READER.get(stream)
+    if reader is None:
+        return None
+    return await reader(conn, name)
 
 
 async def is_item_tracked(conn, name: str) -> bool:
@@ -784,3 +881,67 @@ async def remove_tracked_item(
         stream=cur["stream"],
         note="poller stops on reconcile",
     )
+
+
+# ---------------------------------------------------------------------------
+# WebSocket live push — the delta layer on top of the REST cold-start.
+#
+# One multiplexed socket per client carries many (name, stream) subscriptions
+# (browsers cap ~6 connections/host, so cards share one socket). The client
+# subscribes per card; the server pushes the freshly-written row whenever the
+# NOTIFY listener sees an insert for a subscribed (name, stream).
+#
+# Message contract:
+#   client -> server: {"action": "subscribe"|"unsubscribe", "name": ..., "stream": ...}
+#   server -> client: {"type": "update", "stream": ..., "name": ..., "data": <model>}
+#   data shape per stream == the matching REST GET (OverviewResponse |
+#   BookSnapshot | ActivityResponse | HistoryResponse). For append streams it's
+#   the latest single point; histogram/activity carry the full latest snapshot.
+#
+# On subscribe the server immediately pushes the current latest-1 (a WS-native
+# cold-start), so a freshly opened card paints without a separate REST call.
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/ws")
+async def market_data_websocket(websocket: WebSocket):
+    """Multiplexed live feed: client subscribes to (name, stream) pairs and
+    receives the fresh row on every matching write.
+
+    No Origin/auth gate — same trust model as the REST endpoints this pass. A
+    bad stream or missing field is answered with an inline error frame rather
+    than closing the socket, so one malformed message doesn't drop the others.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            action = msg.get("action")
+            name = msg.get("name")
+            stream = msg.get("stream")
+
+            if action not in ("subscribe", "unsubscribe") or not name or not stream:
+                await websocket.send_json(
+                    {"type": "error", "detail": "expected {action, name, stream}"}
+                )
+                continue
+            if stream not in VALID_STREAMS:
+                await websocket.send_json(
+                    {"type": "error", "detail": f"invalid stream '{stream}'"}
+                )
+                continue
+
+            if action == "unsubscribe":
+                await ws_registry.unsubscribe(name, stream, websocket)
+                continue
+
+            # subscribe: register, then push the current latest-1 immediately so
+            # the card paints without a REST round-trip.
+            await ws_registry.subscribe(name, stream, websocket)
+            async with holder.pool.acquire() as conn:
+                data = await read_ws_delta_for_stream(conn, name, stream)
+            if data is not None:
+                await websocket.send_text(build_update_message(name, stream, data))
+    except WebSocketDisconnect:
+        # Clean every subscription this socket held, in one pass.
+        await ws_registry.drop_socket(websocket)

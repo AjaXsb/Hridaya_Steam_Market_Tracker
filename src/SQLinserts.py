@@ -9,6 +9,7 @@ from src.dataClasses import (
     OrdersActivityData,
     PriceHistoryData
 )
+from utility.marketDataNotify_utility import install_market_data_notify_trigger
 
 
 class SQLinserts:
@@ -140,6 +141,11 @@ class SQLinserts:
         )
         await self._create_timescale_tables()
         await self._create_live_tables()
+        # Install the AFTER INSERT NOTIFY triggers on all four data tables so a
+        # new row signals the API process (which pushes it to subscribed
+        # WebSockets). Single emit point, DB-side; idempotent on re-run.
+        async with self.pg_pool.acquire() as conn:
+            await install_market_data_notify_trigger(conn)
 
     async def _register_jsonb_codec(self, conn):
         """Make asyncpg encode/decode JSONB as native Python objects.
