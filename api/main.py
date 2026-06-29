@@ -11,6 +11,7 @@ Docs at:   http://localhost:8000/docs
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import yaml
@@ -391,11 +392,20 @@ async def get_operational_meta():
     """Return operational state for the header.
 
     - tracked_count: enabled tracked items (real).
-    - rate_limit: the configured budget from config.yaml. "used" is NOT live —
-      the limiter lives in the separate scheduler process and its in-memory
-      state isn't reachable cross-process this pass. Marked used_is_live=False.
+    - rate_limit: configured budget from config.yaml. "used" is derived live from
+      the DB: the limiter's in-memory state lives in the scheduler process and
+      isn't reachable cross-process, but every Steam call that consumes a token
+      writes exactly one row (server-side NOW()) into one of the three live
+      snapshot tables, so counting rows in the last window_seconds reconstructs
+      the count the limiter holds. price_history is excluded by construction:
+      one call writes many rows stamped with each point's historical date, not
+      NOW(), so they never fall inside the window.
     - last_ingest: most recent write across the three live snapshot tables.
     """
+    with open("config.yaml") as f:
+        limits = yaml.safe_load(f)["LIMITS"]
+    window_seconds = limits["WINDOW_SECONDS"]
+
     async with holder.pool.acquire() as conn:
         tracked_count = await conn.fetchval(
             "SELECT count(*) FROM tracked_items WHERE enabled = TRUE"
@@ -411,16 +421,23 @@ async def get_operational_meta():
             ) t
             """
         )
+        used = await conn.fetchval(
+            """
+            SELECT
+                (SELECT count(*) FROM price_overview   WHERE timestamp >= $1)
+              + (SELECT count(*) FROM orders_histogram WHERE timestamp >= $1)
+              + (SELECT count(*) FROM orders_activity  WHERE timestamp >= $1)
+            """,
+            datetime.now(timezone.utc) - timedelta(seconds=window_seconds),
+        )
 
-    with open("config.yaml") as f:
-        limits = yaml.safe_load(f)["LIMITS"]
     rate_limit = RateLimitState(
-        used=None,
+        used=used,
         limit=limits["REQUESTS"],
-        window_seconds=limits["WINDOW_SECONDS"],
-        used_is_live=False,
-        note="'used' not live: rate limiter runs in the scheduler process and "
-        "is not reachable cross-process yet. Showing configured budget.",
+        window_seconds=window_seconds,
+        used_is_live=True,
+        note="'used' derived live from row inserts across the three live "
+        "snapshot tables in the last window_seconds (one request = one row).",
     )
 
     return MetaResponse(

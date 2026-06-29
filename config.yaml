@@ -26,7 +26,7 @@ TRACKING_ITEMS:
 - market_hash_name: Dreams & Nightmares Case
   appid: 730
   currency: 1
-  country: IN
+  country: US
   language: english
   polling-interval-in-seconds: 8
   api_id: itemordersactivity
@@ -34,7 +34,7 @@ TRACKING_ITEMS:
 - market_hash_name: MP9 | Starlight Protector (Field-Tested)
   appid: 730
   currency: 1
-  country: IN
+  country: US
   language: english
-  polling-interval-in-seconds: 60
+  polling-interval-in-seconds: 30
   api_id: priceoverview
