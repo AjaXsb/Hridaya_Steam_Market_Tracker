@@ -20,6 +20,7 @@ from utility.loadConfig_utility import load_config_from_yaml
 from utility.loadTrackedItems_utility import fetch_enabled_tracked_items
 from utility.configTableSync_utility import (
     CHANNEL,
+    ensure_tracked_items_table,
     install_notify_trigger,
     resolve_item_nameid,
     sync_config_to_table,
@@ -444,6 +445,10 @@ class Orchestrator:
             )
         self.dsn = dsn
 
+        # Self-provision the tracked_items table so a fresh database boots with
+        # no manual migration. Must precede the trigger install (which attaches
+        # to this table) and any read of the tracked set. Idempotent.
+        await ensure_tracked_items_table(dsn)
         # Single emit point: install the NOTIFY trigger before any table write.
         await install_notify_trigger(dsn)
         # config -> table on boot (seed/upsert + disable rows config dropped).

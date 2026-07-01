@@ -114,6 +114,41 @@ def build_desired_rows_from_config(config: dict) -> list[dict]:
     return rows
 
 
+# tracked_items schema. The table is the runtime source of truth; this DDL is
+# the single self-provisioning definition so a fresh database (e.g. a new
+# Timescale Cloud service) comes up without a manual migration. Idempotent —
+# safe to run on every boot. Kept in sync with seed_tracked_items.py.
+CREATE_TRACKED_ITEMS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tracked_items (
+    id BIGSERIAL PRIMARY KEY,
+    market_hash_name TEXT NOT NULL,
+    appid INTEGER NOT NULL,
+    item_nameid BIGINT,
+    stream TEXT NOT NULL,
+    currency INTEGER NOT NULL,
+    country TEXT NOT NULL DEFAULT 'US',
+    language TEXT NOT NULL DEFAULT 'english',
+    poll_interval_sec INTEGER NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (market_hash_name, stream)
+)
+"""
+
+
+async def ensure_tracked_items_table(dsn: str) -> None:
+    """Create the tracked_items table if it does not exist.
+
+    Must run before install_notify_trigger (which attaches a trigger to the
+    table) and before any read/write of the tracked set. Idempotent.
+    """
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute(CREATE_TRACKED_ITEMS_TABLE_SQL)
+    finally:
+        await conn.close()
+
+
 async def install_notify_trigger(dsn: str) -> None:
     """Create the AFTER INSERT/UPDATE/DELETE trigger that pg_notifies on ANY
     tracked_items write.
