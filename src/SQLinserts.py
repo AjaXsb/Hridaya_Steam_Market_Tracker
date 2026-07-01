@@ -274,10 +274,15 @@ class SQLinserts:
                     )
                 """)
 
-            # price_overview: compress after 7 days, NO retention (keep growing).
+            # price_overview: compress after 7 days, retain 90 days (fits free
+            # 1 GiB tier; matches price_history so long-term price series align).
             await conn.execute("""
                 SELECT add_compression_policy('price_overview',
                     INTERVAL '7 days', if_not_exists => TRUE)
+            """)
+            await conn.execute("""
+                SELECT add_retention_policy('price_overview',
+                    INTERVAL '90 days', if_not_exists => TRUE)
             """)
 
             # Firehose tables: compress after 1 day, retain only 30 days.
