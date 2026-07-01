@@ -1,0 +1,43 @@
+# Render Blueprint — COMBINED single web service, scale-to-zero showcase.
+#
+# One web service runs the FastAPI API + WebSockets AND the cerebro ingestion
+# orchestrator in-process (RUN_INGESTION=1, see api/main.py lifespan).
+#
+# SCALE-TO-ZERO SHOWCASE (free plan): the service sleeps when idle. The first
+# frontend request wakes it; lifespan spawns cerebro; the frontend polls
+# /ingestion-status until "ready", POSTs the items it wants to /tracked-items,
+# then renders. SEED_FROM_CONFIG is OFF so each wake polls only what the
+# frontend asks for. Data is collected ONLY while someone is watching — fine
+# for a showcase, NOT for gapless history (for that: paid plan + uptime pinger).
+#
+# DB is NOT provisioned here: the code uses TimescaleDB features
+# (create_hypertable, timescaledb.compress) that Render's managed Postgres
+# does not support. Point CS2_PG_DSN at a Timescale-capable host
+# (e.g. Timescale Cloud) and set it as a secret below.
+#
+# Deploy:  push this repo, then in Render -> "New +" -> "Blueprint" -> pick repo.
+# After first deploy, set the sync:false secrets in the service dashboard.
+
+services:
+  - type: web
+    name: cs2-market
+    runtime: python
+    plan: free                   # spins down on idle; first request cold-starts
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.4"
+      - key: RUN_INGESTION         # run cerebro in-process alongside the API
+        value: "1"
+      - key: SEED_FROM_CONFIG      # 0 = frontend owns tracked set (showcase)
+        value: "0"
+      - key: CS2_PG_DSN            # external TimescaleDB DSN
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS  # e.g. https://your-frontend.onrender.com
+        sync: false
+      - key: sessionid             # Steam cookie (ingestion)
+        sync: false
+      - key: steamLoginSecure      # Steam cookie (ingestion)
+        sync: false

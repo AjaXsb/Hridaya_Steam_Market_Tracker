@@ -9,6 +9,7 @@ Run with:  uvicorn api.main:app --reload --port 8000
 Docs at:   http://localhost:8000/docs
 """
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -58,10 +59,19 @@ load_dotenv()
 
 # Frontend origin(s) allowed by CORS. Browsers block cross-origin requests
 # without these headers, so the dev frontend at :3000 must be listed.
-ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+# Production origins come from CORS_ALLOWED_ORIGINS (comma-separated) so the
+# deployed frontend can be whitelisted without a code change; the localhost
+# pair stays as the dev default.
+def parse_allowed_origins_from_env() -> list[str]:
+    """Build the CORS allowlist: env-supplied origins plus localhost dev pair."""
+    defaults = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    extra = [o.strip() for o in raw.split(",") if o.strip()]
+    # De-dupe while preserving order.
+    return list(dict.fromkeys(extra + defaults))
+
+
+ALLOWED_ORIGINS = parse_allowed_origins_from_env()
 
 # Cold-start population sizes, fixed per stream (no client window params this
 # pass — see the GET docstrings). Overview = live chart tip; activity = enough
@@ -89,13 +99,42 @@ HISTORY_RANGES = {
 ws_registry = SubscriptionRegistry()
 
 
+class IngestionHandle:
+    """Holds the in-process cerebro orchestrator (if any), so the status
+    endpoints can report whether ingestion is live without reaching into
+    lifespan locals. orchestrator is None when RUN_INGESTION is off."""
+
+    orchestrator = None  # set in lifespan when ingestion is enabled
+
+
+ingestion = IngestionHandle()
+
+
+def ingestion_enabled() -> bool:
+    """Whether to run cerebro in-process. Combined deploy (one Render web
+    service hosts API + ingestion) sets RUN_INGESTION=1; unset/0 runs API only
+    (e.g. local dev with cerebro started separately)."""
+    return os.getenv("RUN_INGESTION", "0").lower() in ("1", "true", "yes")
+
+
+def seed_tracked_set_from_config() -> bool:
+    """Whether cerebro replays config.yaml -> tracked_items on boot. Off by
+    default for the scale-to-zero showcase so each wake polls only what the
+    frontend requests; set SEED_FROM_CONFIG=1 to restore config-seeded boots."""
+    return os.getenv("SEED_FROM_CONFIG", "0").lower() in ("1", "true", "yes")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Open the pool at startup, spawn the market-data NOTIFY listener, and tear
-    both down at shutdown.
+    """Open the pool at startup, spawn the market-data NOTIFY listener, optionally
+    run the cerebro ingestion orchestrator in-process, and tear all down at
+    shutdown.
 
     The listener opens its OWN dedicated connection (asyncpg LISTEN can't share a
-    pool connection), held here so it closes cleanly on shutdown.
+    pool connection), held here so it closes cleanly on shutdown. When
+    RUN_INGESTION is set, the cerebro Orchestrator runs as a background task so a
+    single Render web service hosts both the API and ingestion; it owns no signal
+    handlers (the web server does) and is stopped via its shutdown_event.
     """
     holder.pool = await open_read_pool()
     listen_conn = await listen_for_market_data(
@@ -104,9 +143,39 @@ async def lifespan(app: FastAPI):
         ws_registry,
         read_ws_delta_for_stream,
     )
+
+    orchestrator = None
+    ingestion_task = None
+    if ingestion_enabled():
+        # Imported lazily so API-only runs never pull in the ingestion stack.
+        from cerebro import Orchestrator
+
+        orchestrator = Orchestrator(config_path="config.yaml")
+        ingestion.orchestrator = orchestrator
+        ingestion_task = asyncio.create_task(
+            orchestrator.run(
+                install_signal_handlers=False,
+                seed_from_config=seed_tracked_set_from_config(),
+            ),
+            name="cerebro-ingestion",
+        )
+
     try:
         yield
     finally:
+        ingestion.orchestrator = None
+        # Stop ingestion first (clean path via its shutdown_event), then drop
+        # the listener and pool it shares with the API.
+        if orchestrator is not None and ingestion_task is not None:
+            orchestrator.shutdown_event.set()
+            try:
+                await asyncio.wait_for(ingestion_task, timeout=30)
+            except asyncio.TimeoutError:
+                ingestion_task.cancel()
+                try:
+                    await ingestion_task
+                except asyncio.CancelledError:
+                    pass
         await listen_conn.close()
         if holder.pool is not None:
             await holder.pool.close()
@@ -122,9 +191,35 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+async def report_liveness():
+    """Cheap liveness probe. On a scale-to-zero host the FIRST hit is what wakes
+    the service; it returns as soon as the HTTP server is up, before ingestion
+    has finished booting. The frontend calls this to trigger the wake, then polls
+    /ingestion-status for readiness."""
+    return {"status": "ok"}
+
+
+@app.get("/ingestion-status")
+async def report_ingestion_status():
+    """Readiness of in-process ingestion, for the scale-to-zero wake flow.
+
+    state:
+      - "disabled": RUN_INGESTION is off — API runs without ingestion.
+      - "booting":  orchestrator spawned, schedulers/listener not live yet.
+      - "ready":    pollers + change-listener live; frontend POSTs to
+                    /tracked-items now take effect and the frontend can render.
+    """
+    orch = ingestion.orchestrator
+    if orch is None:
+        return {"state": "disabled", "ready": False}
+    ready = orch.ready_event.is_set()
+    return {"state": "ready" if ready else "booting", "ready": ready}
 
 
 def parse_price_to_float(value) -> Optional[float]:
@@ -898,6 +993,134 @@ async def remove_tracked_item(
         stream=cur["stream"],
         note="poller stops on reconcile",
     )
+
+
+@app.put("/tracked-items")
+async def replace_tracked_set(items: list[TrackedItemCreate]):
+    """Replace the ENTIRE enabled tracked set with `items` in one call.
+
+    Declarative, unlike POST (which adds one): after this returns, exactly the
+    items in the body are enabled and every other row is disabled. Built for the
+    scale-to-zero wake flow — the frontend declares the whole set it wants on
+    each cold start without diffing the current set itself. An empty body
+    disables everything ("track nothing").
+
+    All-or-nothing: the whole desired set is validated, nameid-resolved, and
+    feasibility-gated FIRST, then enable/disable is applied in one transaction.
+    A bad item or an over-budget set rejects the entire call and changes nothing.
+    """
+    # --- validate + normalize each desired item; reject dup keys in the body ---
+    normalized = []
+    seen = set()
+    for item in items:
+        if item.stream not in VALID_STREAMS:
+            reject_and_log(400, f"Invalid stream '{item.stream}'. Use one of: {', '.join(VALID_STREAMS)}")
+        if not item.market_hash_name.strip():
+            reject_and_log(400, "market_hash_name must not be empty")
+        if item.appid <= 0:
+            reject_and_log(400, f"Invalid appid {item.appid} (must be positive; 730 = CS2)")
+        if item.currency <= 0:
+            reject_and_log(400, f"Invalid currency id {item.currency}")
+
+        key = (item.market_hash_name, item.stream)
+        if key in seen:
+            reject_and_log(400, f"Duplicate item in body: '{item.market_hash_name}' ({item.stream})")
+        seen.add(key)
+
+        # Cadence: pricehistory is a fixed hourly tick (client value ignored);
+        # live streams require an in-bounds interval.
+        if item.stream == "pricehistory":
+            poll_interval = PRICEHISTORY_POLL_SEC
+        else:
+            if item.poll_interval_sec is None:
+                reject_and_log(400, f"poll_interval_sec is required for the '{item.stream}' stream ('{item.market_hash_name}')")
+            if not (MIN_POLL_INTERVAL_SEC <= item.poll_interval_sec <= MAX_POLL_INTERVAL_SEC):
+                reject_and_log(400, f"poll_interval_sec {item.poll_interval_sec} out of bounds [{MIN_POLL_INTERVAL_SEC}, {MAX_POLL_INTERVAL_SEC}] for '{item.market_hash_name}'")
+            poll_interval = item.poll_interval_sec
+
+        # Resolve nameid server-side for streams that need it (never client-supplied).
+        item_nameid = None
+        if item.stream in NAMEID_REQUIRED_STREAMS:
+            item_nameid = resolve_item_nameid(item.market_hash_name)
+            if item_nameid is None:
+                reject_and_log(400, f"Couldn't find '{item.market_hash_name}' on Steam — no item id resolvable, which the '{item.stream}' stream requires.")
+
+        normalized.append({
+            "market_hash_name": item.market_hash_name,
+            "appid": item.appid,
+            "item_nameid": item_nameid,
+            "stream": item.stream,
+            "currency": item.currency,
+            "country": item.country,
+            "language": item.language,
+            "poll_interval_sec": poll_interval,
+        })
+
+    print(f"\n📥 PUT /tracked-items: replacing set with {len(normalized)} item(s)")
+
+    # --- feasibility gate over the WHOLE desired live set (one check) ---
+    # pricehistory is excluded (fixed hourly tick, off the sustained budget),
+    # same rule as POST/boot validation.
+    rate_limit, window = read_rate_budget()
+    intervals = [n["poll_interval_sec"] for n in normalized if n["stream"] != "pricehistory"]
+    ok, total, util = compute_feasibility(rate_limit, window, intervals)
+    if not ok:
+        reject_and_log(409, f"Desired set would exceed rate limit: {total} req/{window}s vs budget {rate_limit}. Drop an item or raise poll_interval_sec.")
+
+    # --- apply atomically: upsert+enable desired, disable everything else ---
+    names = [n["market_hash_name"] for n in normalized]
+    streams = [n["stream"] for n in normalized]
+    async with holder.pool.acquire() as conn:
+        async with conn.transaction():
+            for n in normalized:
+                await conn.execute(
+                    """
+                    INSERT INTO tracked_items
+                        (market_hash_name, appid, item_nameid, stream,
+                         currency, country, language, poll_interval_sec, enabled)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+                    ON CONFLICT (market_hash_name, stream) DO UPDATE SET
+                        appid = EXCLUDED.appid,
+                        item_nameid = EXCLUDED.item_nameid,
+                        currency = EXCLUDED.currency,
+                        country = EXCLUDED.country,
+                        language = EXCLUDED.language,
+                        poll_interval_sec = EXCLUDED.poll_interval_sec,
+                        enabled = TRUE
+                    """,
+                    n["market_hash_name"], n["appid"], n["item_nameid"], n["stream"],
+                    n["currency"], n["country"], n["language"], n["poll_interval_sec"],
+                )
+            # Disable every currently-enabled row not in the desired set. With an
+            # empty desired set the arrays are empty, NOT IN () is TRUE, so all
+            # enabled rows are disabled — the "track nothing" case.
+            disabled = await conn.fetch(
+                """
+                UPDATE tracked_items SET enabled = FALSE
+                WHERE enabled = TRUE
+                  AND (market_hash_name, stream) NOT IN (
+                      SELECT * FROM unnest($1::text[], $2::text[])
+                  )
+                RETURNING market_hash_name, stream
+                """,
+                names, streams,
+            )
+
+    await mirror_config_after_write()
+    disabled_keys = [{"market_hash_name": r["market_hash_name"], "stream": r["stream"]} for r in disabled]
+    print(f"  ✓ tracked set replaced: {len(normalized)} enabled, {len(disabled_keys)} disabled "
+          f"({total} req/{window}s, {util:.1f}% capacity) — reconcile chain applies it")
+    return {
+        "status": "replaced",
+        "enabled": [{"market_hash_name": n["market_hash_name"], "stream": n["stream"]} for n in normalized],
+        "disabled": disabled_keys,
+        "capacity": {
+            "total_reqs": total,
+            "window_seconds": window,
+            "budget": rate_limit,
+            "utilization_pct": round(util, 1),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

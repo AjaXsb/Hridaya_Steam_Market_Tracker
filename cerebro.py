@@ -58,6 +58,10 @@ class Orchestrator:
         self.snoozerScheduler: Optional[snoozerScheduler] = None
         self.clockworkScheduler: Optional[ClockworkScheduler] = None
         self.shutdown_event = asyncio.Event()
+        # Set once schedulers + change-listener are live, i.e. ingestion is
+        # actually polling. An embedding host (the API) reads this to tell the
+        # frontend "ready" vs "still booting" on a scale-to-zero cold start.
+        self.ready_event = asyncio.Event()
         self.dsn: Optional[str] = None
         # Runtime-reactive machinery (config edit / SQL write -> live reconcile).
         self.config_watcher: Optional[ConfigWatcher] = None
@@ -228,9 +232,10 @@ class Orchestrator:
         # never hardcoded. There is no SQLite fallback — fail loudly if unset.
         timescale_dsn = os.getenv("CS2_PG_DSN")
         if not timescale_dsn:
-            print("\n❌ CS2_PG_DSN is not set. Postgres is required (no SQLite fallback).")
-            print("   Set it in .env, e.g. CS2_PG_DSN=postgresql://user:pass@localhost:5432/cs2market")
-            exit(1)
+            raise RuntimeError(
+                "CS2_PG_DSN is not set. Postgres is required (no SQLite fallback). "
+                "Set it in .env, e.g. CS2_PG_DSN=postgresql://user:pass@localhost:5432/cs2market"
+            )
         print("  ✓ Database: Postgres/Timescale (CS2_PG_DSN)")
         self.timescale_dsn = timescale_dsn
 
@@ -407,11 +412,22 @@ class Orchestrator:
             if hist['removed']:
                 print(f"      archival removed: {hist['removed']}")
 
-    async def run(self):
+    async def run(self, install_signal_handlers: bool = True, seed_from_config: bool = True):
         """
         Main orchestrator loop.
 
         Runs all schedulers concurrently until shutdown signal or config change.
+
+        install_signal_handlers: True for the standalone `python cerebro.py`
+        entrypoint. False when embedded inside another async host (e.g. the
+        FastAPI app on Render), where the host owns SIGINT/SIGTERM and stops us
+        by cancelling this coroutine instead.
+
+        seed_from_config: True replays config.yaml -> tracked_items on boot (the
+        standalone default). False skips that seed so the frontend alone drives
+        the tracked set — used by the scale-to-zero showcase, where each wake
+        should poll exactly what the frontend asks for, not re-enable config's
+        items.
         """
         # Load config.yaml for the global rate budget (LIMITS) + pricehistory items
         self.load_config()
@@ -423,15 +439,21 @@ class Orchestrator:
         # runtime master; config is the boot input + human-editable mirror.
         dsn = os.getenv("CS2_PG_DSN")
         if not dsn:
-            print("\n❌ CS2_PG_DSN is not set. Required for the tracked_items pipeline.")
-            exit(1)
+            raise RuntimeError(
+                "CS2_PG_DSN is not set. Required for the tracked_items pipeline."
+            )
         self.dsn = dsn
 
         # Single emit point: install the NOTIFY trigger before any table write.
         await install_notify_trigger(dsn)
         # config -> table on boot (seed/upsert + disable rows config dropped).
-        boot_sync = await sync_config_to_table(dsn, self.config_path)
-        print(f"  ✓ Boot config→table sync: {boot_sync}")
+        # Skipped when the frontend owns the tracked set (scale-to-zero showcase),
+        # so a cold start polls only what the frontend requests.
+        if seed_from_config:
+            boot_sync = await sync_config_to_table(dsn, self.config_path)
+            print(f"  ✓ Boot config→table sync: {boot_sync}")
+        else:
+            print("  ◦ Skipping boot config→table sync (frontend owns tracked set)")
 
         # Load the tracked set from the tracked_items table (source of truth)
         await self.load_tracked_items_from_table()
@@ -443,8 +465,10 @@ class Orchestrator:
         # Setup schedulers with shared rate limiter
         self.setup_schedulers()
 
-        # Setup signal handlers for graceful shutdown
-        self.setup_signal_handlers()
+        # Setup signal handlers for graceful shutdown (standalone only; an
+        # embedding host stops us by cancelling this coroutine).
+        if install_signal_handlers:
+            self.setup_signal_handlers()
 
         # Reactive machinery: LISTEN for table changes, then watch config.yaml.
         # Listener up before watcher so the very first watcher-driven table write
@@ -477,6 +501,10 @@ class Orchestrator:
         if not tasks:
             print("Warning: No schedulers configured. Exiting.")
             return
+
+        # Pollers + change-listener are live: signal readiness so an embedding
+        # host can flip the frontend from "booting" to "ready".
+        self.ready_event.set()
 
         # Run all schedulers concurrently until shutdown
         try:
